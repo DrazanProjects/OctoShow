@@ -1,0 +1,14 @@
+*.iml
+.gradle
+/.idea/
+.kotlin
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# mock OctoPrint: dependencies and its throwaway localhost certificate
+tools/mock-octoprint/node_modules/
+*.pem

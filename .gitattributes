@@ -1,0 +1,5 @@
+# Text files keep whatever line endings suit the machine they are checked out on,
+# apart from the two scripts that only run with their own.
+* text=auto
+gradlew text eol=lf
+*.bat text eol=crlf

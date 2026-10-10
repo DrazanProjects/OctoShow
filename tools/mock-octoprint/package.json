@@ -1,0 +1,7 @@
+{
+  "name": "mock-octoprint",
+  "private": true,
+  "description": "A stand-in OctoPrint for developing and screenshotting the display app",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}
