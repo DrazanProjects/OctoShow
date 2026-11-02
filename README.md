@@ -9,7 +9,9 @@ when you are done.
 
 Once the display has read a job's G-code, the picture of the part stops being a
 progress bar laid over a thumbnail. It draws the part as it stands, layer by layer,
-and colors the top layer in the order the nozzle is laying it:
+with its real infill, overhangs and supports, and colors the top layer in the order
+the nozzle is laying it. The part is turned to fill the panel however the slicer laid
+it on the bed, its size is noted in the corner, and a button shows it from another side:
 
 ![A layer filling in the way the nozzle goes over it](docs/layer-fill.gif)
 
@@ -58,42 +60,50 @@ a layer (or several, once there are too many to tell apart), and the bead on the
 bar is how far through that layer the nozzle has got. Without the plugin the stack
 fills by percentage.
 
-**The part, as it is being printed.** While a job runs, the display fetches its
-G-code once, slowly enough not to trouble the Pi, and from then on draws the part
-only as high as it has been printed, inside a ghost of the finished shape. Until
-that drawing is ready, and for files over 300 MB, which it leaves alone, it shows
-the file's picture with a line rising up it. The layer on top fills in along the
-nozzle's real path, in the order the slicer laid it: usually outlines first, then
-the infill in whichever direction it runs, with a glow where the nozzle is. This
-needs the Dashboard plugin, and the file has to have been uploaded while that plugin
-was installed, because the plugin marks the layers as OctoPrint stores the file.
-Without it the part rises by plain percentage.
+**The part, as it is being printed.** As soon as a job starts, the display fetches
+its G-code once, slowly enough not to trouble the Pi, whether or not anyone is
+looking: the screen can be dark or showing the camera. From then on it draws the
+part only as high as it has been printed, inside a ghost of the finished shape.
+Until that drawing is ready, which is usually before the bed has finished heating,
+the ghost is all it shows. Only a file it can't draw (one over 300 MB, say, or one
+OctoPrint won't hand over) gets the file's picture with a line rising up it instead.
+
+The drawing is of what is really there, layer by layer: the infill inside a part still
+being printed, the air under an overhang, and supports and brims, dimmer than the
+part. A part with something behind it can be turned with the button in the corner.
+
+The layer on top fills in along the nozzle's real path, in the order the slicer laid
+it: usually outlines first, then the infill in whichever direction it runs, with a
+glow where the nozzle is. This needs the Dashboard plugin, and the file has to have
+been uploaded while that plugin was installed, because the plugin marks the layers
+as OctoPrint stores the file. Without it the part rises by plain percentage.
 
 **Files** lists the printable files in OctoPrint's own storage (not the printer's
-SD card), folder by folder, newest first, with previews. Starting a print asks once,
-reminding you to check the bed.
+SD card), folder by folder, newest first, with previews, print times and how much
+filament each needs in grams, worked out as PLA. Starting a print asks once, reminding
+you to check the bed.
 
 **Previews for every file.** When the Slicer Thumbnails plugin has pulled the
 slicer's thumbnail out of a file, that is what the list shows. Otherwise the display
 draws one itself: it reads the G-code, builds up the shape the extruded lines make,
-and shades it like a slicer preview, in whatever filament color the display is set
-to. Skirts, brims, supports and the purge line are left out when the slicer labels
-them, as OrcaSlicer, PrusaSlicer, Cura and Bambu Studio do. These pictures are kept
-on the display only. Nothing is written back to OctoPrint, so file dates and print
-history are untouched.
+layer by layer, and shades it like a slicer preview, in whatever filament color the
+display is set to. Supports and brims show dimmer than the part; skirts and the purge
+line are left out. Both come from the labels slicers put in a file, as OrcaSlicer,
+PrusaSlicer, Cura and Bambu Studio do. These pictures are kept on the display only.
+Nothing is written back to OctoPrint, so file dates and print history are untouched.
 
 ![Previews the display drew from G-code alone](docs/drawn-previews.png)
 
 **Controls** has heat (with the first four of OctoPrint's own temperature presets),
-moving the head, extruding and retracting, the part fan and the light. While a job
-runs, moving the head and feeding filament are locked, and the middle column becomes
-speed and flow.
+moving the head and feeding filament, each at a speed and distance you pick, the part
+fan and the light. While a job runs, moving the head and feeding filament are locked,
+and the middle column becomes speed and flow.
 
 **Colors.** Background, text and accent are each chosen separately in Settings, and
-the printed part is tinted to match the spool. The screen can go dark after 1, 5 or
-15 minutes without a touch: black, with the backlight at its lowest, which is as far
-as an app can take it. Touching it anywhere brings it back, and that first touch
-does nothing else.
+the printed part is tinted to match the spool. The screen can go dark after anything
+from a minute to four hours without a touch, picked from a list: black, with the
+backlight at its lowest, which is as far as an app can take it. Touching it anywhere
+brings it back, and that first touch does nothing else.
 
 ![Four of the color combinations](docs/colors.png)
 
@@ -146,9 +156,14 @@ Switch on Android debugging in the Echo Show's developer options and check that 
 shows up in `adb devices`. Then build the app and install it:
 
 ```
-gradlew assembleDebug
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+gradlew assembleRelease
+adb install -r app\build\outputs\apk\release\app-release.apk
 ```
+
+Use the release build on the display. A debug build runs dozens of times slower on
+this hardware: it takes minutes to read a print's G-code where this takes seconds.
+It is signed with your computer's own Android debug key, which is all a device you
+install to yourself needs, and which Gradle sets up by itself.
 
 Building needs the Android SDK with platform 36, which Gradle finds through
 `ANDROID_HOME` or a `local.properties` file naming `sdk.dir` (Android Studio writes
@@ -178,8 +193,9 @@ If nothing is listed, type the address (`octopi.local` or the Pi's IP). If you
 would rather not approve a request, "I have a key" takes an application key copied
 from OctoPrint's settings.
 
-For unattended setup, a debug build also accepts the address and key over adb, and
-the smart plug's address the same way:
+For unattended setup, a debug build (`gradlew assembleDebug`) also accepts the
+address and key over adb, and the smart plug's address the same way. What it is given
+stays when the release build is installed over it.
 
 ```
 adb shell am start -n com.drazan.echoshow.octoprint/.MainActivity --es url https://octopi.local --es key YOUR_KEY

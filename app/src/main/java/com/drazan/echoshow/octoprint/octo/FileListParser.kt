@@ -104,7 +104,7 @@ internal object FileListParser {
             size = size,
             date = date,
             estimatedPrintTime = estimate,
-            filamentMm = filament,
+            filamentCm3 = filament,
             thumbnail = thumbnail,
             lastPrintSuccess = lastSuccess,
             children = children,
@@ -116,7 +116,7 @@ internal object FileListParser {
         var total: Double? = null
         r.fields { _ ->
             r.fields { key ->
-                if (key == "length") r.number()?.let { total = (total ?: 0.0) + it } else r.skipValue()
+                if (key == "volume") r.number()?.let { total = (total ?: 0.0) + it } else r.skipValue()
             }
         }
         return total

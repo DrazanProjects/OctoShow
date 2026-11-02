@@ -22,6 +22,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // The debug key, so this installs straight over a debug build and keeps what the app has stored.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

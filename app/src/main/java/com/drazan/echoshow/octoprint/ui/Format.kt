@@ -84,8 +84,18 @@ fun uploadedAt(epochSeconds: Long, clock24: Boolean): String {
     }
 }
 
-/** Filament length in metres. */
-fun filamentLength(mm: Double): String = "%.1f m".format(mm / 1000.0)
+/** OctoPrint knows how much filament a file uses, not which kind, so PLA stands in for all of them. */
+private const val GRAMS_PER_CM3 = 1.24
+
+/** Filament weight in grams, to a tenth for the smallest parts. */
+fun filamentWeight(cm3: Double): String {
+    val grams = cm3 * GRAMS_PER_CM3
+    return (if (grams < 10) "%.1f g" else "%.0f g").format(grams)
+}
+
+/** A part's size in millimetres, height last, to a tenth for the smallest. */
+fun partSize(long: Float, broad: Float, high: Float): String =
+    listOf(long, broad, high).joinToString(" × ") { if (it < 10f) "%.1f".format(it) else "%.0f".format(it) } + " mm"
 
 fun degrees(v: Float?): String = if (v == null) "–" else "${Math.round(v)}°"
 

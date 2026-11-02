@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.drazan.echoshow.octoprint.octo.JogSpeed
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -29,6 +30,10 @@ data class DisplayPrefs(
     val offAfterMin: Int = 5,
     /** What the big panel on the status screen shows: "model" (the file's preview) or "camera". */
     val view: String = "model",
+    /** How fast the arrows on the controls screen move the head. */
+    val jogSpeed: JogSpeed = JogSpeed.NORMAL,
+    /** How fast Extrude and Retract feed filament, in mm/min. */
+    val extrudeSpeed: Int = 300,
 )
 
 class Prefs(private val context: Context) {
@@ -46,6 +51,8 @@ class Prefs(private val context: Context) {
     private val offAfter = intPreferencesKey("dim_after_min")
     private val view = stringPreferencesKey("picture")
     private val plugUrl = stringPreferencesKey("plug_url")
+    private val jogSpeed = stringPreferencesKey("jog_speed")
+    private val extrudeSpeed = intPreferencesKey("extrude_speed")
 
     val server: Flow<Server?> = context.store.data.map { p ->
         val u = p[url]
@@ -62,6 +69,8 @@ class Prefs(private val context: Context) {
             clock24 = p[clock24] ?: false,
             offAfterMin = p[offAfter] ?: 5,
             view = p[view] ?: "model",
+            jogSpeed = JogSpeed.entries.firstOrNull { it.name == p[jogSpeed] } ?: JogSpeed.NORMAL,
+            extrudeSpeed = p[extrudeSpeed] ?: 300,
         )
     }.distinctUntilChanged()
 
@@ -89,5 +98,7 @@ class Prefs(private val context: Context) {
     suspend fun setClock24(v: Boolean) = context.store.edit { it[clock24] = v }
     suspend fun setOffAfter(min: Int) = context.store.edit { it[offAfter] = min }
     suspend fun setView(v: String) = context.store.edit { it[view] = v }
+    suspend fun setJogSpeed(v: JogSpeed) = context.store.edit { it[jogSpeed] = v.name }
+    suspend fun setExtrudeSpeed(mmPerMin: Int) = context.store.edit { it[extrudeSpeed] = mmPerMin }
     suspend fun setPlug(url: String?) = context.store.edit { if (url != null) it[plugUrl] = url else it.remove(plugUrl) }
 }

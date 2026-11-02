@@ -2,15 +2,17 @@ package com.drazan.echoshow.octoprint
 
 import com.drazan.echoshow.octoprint.octo.GcodePreview
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.hypot
 
 class GcodePreviewTest {
 
-    private fun draw(gcode: String) = GcodePreview.draw({ gcode.byteInputStream() }, size = 96)
+    private fun draw(gcode: String) = GcodePreview.draw({ gcode.byteInputStream() }, width = 96, height = 96)
 
     /** Share of the picture's pixels that show any of the part. */
     private fun GcodePreview.Picture.covered(): Float = alpha.count { it.toInt() != 0 }.toFloat() / alpha.size
@@ -84,14 +86,14 @@ class GcodePreviewTest {
 
     @Test
     fun stopsWhenTold() {
-        assertNull(GcodePreview.draw({ (start + slab()).byteInputStream() }, size = 96, keepGoing = { false }))
+        assertNull(GcodePreview.draw({ (start + slab()).byteInputStream() }, width = 96, height = 96, keepGoing = { false }))
     }
 
     @Test
     fun aPartHalfPrintedIsShorterWithItsTopLayerMarked() {
         val shape = GcodePreview.shape({ (start + slab()).byteInputStream() })!!
-        val whole = GcodePreview.render(shape, size = 96)!!
-        val half = GcodePreview.render(shape, size = 96, upTo = shape.top / 2)!!
+        val whole = GcodePreview.render(shape, width = 96, height = 96)!!
+        val half = GcodePreview.render(shape, width = 96, height = 96, upTo = shape.top / 2)!!
 
         assertTrue("half a slab should cover less of the picture than a whole one", half.covered() < whole.covered())
         assertTrue("the layer being laid should be marked", half.fresh.any { it.toInt() != 0 })
@@ -102,10 +104,10 @@ class GcodePreviewTest {
     fun everyStageSitsInsideTheFinishedPicture() {
         // or the growing part would wander about inside its own ghost
         val shape = GcodePreview.shape({ (start + slab()).byteInputStream() })!!
-        val whole = GcodePreview.render(shape, size = 96)!!
+        val whole = GcodePreview.render(shape, width = 96, height = 96)!!
         val covered = whole.alpha.count { it.toInt() != 0 }
         for (tenths in 1..9) {
-            val stage = GcodePreview.render(shape, size = 96, upTo = shape.top * tenths / 10)!!
+            val stage = GcodePreview.render(shape, width = 96, height = 96, upTo = shape.top * tenths / 10)!!
             val outside = stage.alpha.indices.count { stage.alpha[it].toInt() != 0 && whole.alpha[it].toInt() == 0 }
             // a handful of pixels along an edge can fall either way; a part that had moved would be out by hundreds
             assertTrue("at $tenths tenths of the height, $outside pixels fell outside", outside <= covered / 100)
@@ -116,7 +118,7 @@ class GcodePreviewTest {
     fun drawingTheShapeIsTheSameAsDrawingTheFile() {
         val gcode = start + slab()
         val direct = draw(gcode)!!
-        val viaShape = GcodePreview.render(GcodePreview.shape({ gcode.byteInputStream() })!!, size = 96)!!
+        val viaShape = GcodePreview.render(GcodePreview.shape({ gcode.byteInputStream() })!!, width = 96, height = 96)!!
         assertTrue(direct.light.contentEquals(viaShape.light) && direct.alpha.contentEquals(viaShape.alpha))
     }
 
@@ -197,7 +199,7 @@ class GcodePreviewTest {
         val reading = read(start + markedSlab(scarf = true))
         val layer = reading.route.layers.first { it.number == 4 }
         assertEquals("the layer is where most of it is laid, not where its seam starts", 0.8f, layer.z, 0.001f)
-        val picture = GcodePreview.render(reading.shape, reading.route, layer, size = 96)!!
+        val picture = GcodePreview.render(reading.shape, reading.route, layer, width = 96, height = 96)!!
         val laying = picture.fresh.count { it.toInt() != 0 }
         val timed = picture.fresh.indices.count { picture.fresh[it].toInt() != 0 && picture.reached!![it].toInt() != 0 }
         assertTrue("the whole layer should show as the one being laid: $timed of $laying", laying > 200 && timed >= laying * 95 / 100)
@@ -232,7 +234,7 @@ class GcodePreviewTest {
     fun aPictureOfALayerSaysWhenEachBitOfItIsLaid() {
         val reading = read(start + markedSlab())
         val layer = reading.route.layers.first { it.number == 5 }
-        val picture = GcodePreview.render(reading.shape, reading.route, layer, size = 96)!!
+        val picture = GcodePreview.render(reading.shape, reading.route, layer, width = 96, height = 96)!!
         val reached = picture.reached!!
         val trail = picture.trail!!
 
@@ -264,7 +266,145 @@ class GcodePreviewTest {
     @Test
     fun theLastLayerIsShownBeingLaidToo() {
         val reading = read(start + markedSlab())
-        val picture = GcodePreview.render(reading.shape, reading.route, reading.route.layers.last(), size = 96)!!
+        val picture = GcodePreview.render(reading.shape, reading.route, reading.route.layers.last(), width = 96, height = 96)!!
         assertTrue(picture.fresh.any { it.toInt() != 0 } && picture.reached!!.any { it.toInt() != 0 })
+    }
+
+    /* ---------------- what the part really is ---------------- */
+
+    /** Layers of straight lines side by side, [wide] mm across and running between two points, from [from] to [to] mm up. */
+    private fun block(x0: Float, y0: Float, x1: Float, y1: Float, wide: Float, from: Float, to: Float, label: String = ";TYPE:Outer wall") = buildString {
+        val length = hypot(x1 - x0, y1 - y0)
+        val acrossX = (y0 - y1) / length
+        val acrossY = (x1 - x0) / length
+        var z = from
+        while (z <= to + 0.01f) {
+            appendLine("G1 Z%.2f F600".format(z))
+            appendLine(label)
+            var off = -wide / 2
+            while (off <= wide / 2) {
+                appendLine("G1 X%.3f Y%.3f F6000".format(x0 + acrossX * off, y0 + acrossY * off))
+                appendLine("G1 X%.3f Y%.3f E0.6".format(x1 + acrossX * off, y1 + acrossY * off))
+                off += 0.4f
+            }
+            z += 0.2f
+        }
+    }
+
+    /** How much of its width and height a picture's part reaches across. */
+    private fun GcodePreview.Picture.spans(): Pair<Float, Float> {
+        val xs = alpha.indices.filter { alpha[it].toInt() != 0 }.map { it % width }
+        val ys = alpha.indices.filter { alpha[it].toInt() != 0 }.map { it / width }
+        return (xs.max() - xs.min() + 1f) / width to (ys.max() - ys.min() + 1f) / height
+    }
+
+    private fun GcodePreview.Picture.meanLight(): Float {
+        val shown = alpha.indices.filter { alpha[it].toInt() and 0xFF == 255 }
+        return shown.map { light[it].toInt() and 0xFF }.average().toFloat()
+    }
+
+    @Test
+    fun aLongPartLaidCornerToCornerStillFillsThePicture() {
+        // a bar 280 mm long and 30 wide, the way a slicer fits it onto a 220 mm bed
+        val picture = GcodePreview.draw({ ("M83\n" + block(10f, 10f, 208f, 208f, 30f, 0.2f, 4f)).byteInputStream() })!!
+        assertTrue("it should be the picture's shape, not a square", picture.width > picture.height)
+        val (wide, tall) = picture.spans()
+        assertTrue("it should reach right across the picture, not ${wide * 100}%", wide > 0.9f)
+        assertTrue("and be turned to lie across it, not stand ${tall * 100}% of the way up", tall < 0.6f)
+        // which is all a bar that shape can cover of a picture this shape
+        assertTrue("so there is a good deal of it, not ${picture.covered() * 100}%", picture.covered() > 0.08f)
+    }
+
+    @Test
+    fun aPartIsMeasuredAlongItsOwnLength() {
+        val shape = GcodePreview.shape({ ("M83\n" + block(10f, 10f, 208f, 208f, 30f, 0.2f, 4f)).byteInputStream() })!!
+        val view = shape.view()
+        assertEquals(280f, view.long, 3f)
+        assertEquals(30f, view.broad, 3f)
+        assertEquals(4f, view.high, 0.3f)
+    }
+
+    /** A roof 30 mm square, 8 to 10 mm up, held by a pillar in the middle of it. */
+    private val mushroom = "M83\n" + block(100f, 110f, 104f, 110f, 4f, 0.2f, 10f) + block(87f, 110f, 117f, 110f, 30f, 8.2f, 10f)
+
+    @Test
+    fun theAirUnderAnOverhangIsAir() {
+        val shape = GcodePreview.shape({ mushroom.byteInputStream() })!!
+        val whole = GcodePreview.render(shape, width = 96, height = 96)!!
+        val low = GcodePreview.render(shape, width = 96, height = 96, upTo = 5f)!!
+        // with only one height for each spot of bed, the roof would have come up with the pillar
+        assertTrue("at 5 mm only the pillar stands: ${low.covered()} of ${whole.covered()}", low.covered() < whole.covered() / 5)
+        val stack = shape.stack
+        val s = stack.of(4f)
+        val beside = ((90f - shape.originX) / shape.cell).toInt()
+        val row = ((110f - shape.originY) / shape.cell).toInt()
+        assertFalse("nothing is laid under the roof", stack.solid(beside, row, s))
+        assertTrue("the roof itself is there", stack.solid(beside, row, stack.of(9f)))
+    }
+
+    @Test
+    fun whatOverhangsAWallFromFarAboveLeavesItTheSameAllAlong() {
+        // a block, a shaft on it, and on that a roof reaching past the block's sides high above them,
+        // like a gear on a block: the wall under the roof used to go dark in a band from top to bottom
+        val gcode = "M83\n" + block(100f, 120f, 140f, 120f, 30f, 0.2f, 8f) +
+            block(115f, 120f, 125f, 120f, 10f, 8.2f, 16f) + block(110f, 120f, 130f, 120f, 40f, 16.2f, 20f)
+        val p = GcodePreview.draw({ gcode.byteInputStream() })!!
+        // along the foot of the wall on the right of the picture, which stands square to the block
+        val feet = (0 until p.width).map { x -> (p.height - 1 downTo 0).firstOrNull { y -> p.alpha[y * p.width + x].toInt() != 0 } }
+        val covered = feet.indices.filter { feet[it] != null }
+        val corner = covered.maxBy { feet[it]!! }
+        val along = (corner + 6..covered.max() - 6).map { x ->
+            p.light[(feet[x]!! - 4) * p.width + x].toInt() and 0xFF
+        }
+        assertTrue("the wall should be the same all along, not ${along.min()} to ${along.max()}", along.max() - along.min() <= 20)
+    }
+
+    @Test
+    fun noLayerIsLeftEmpty() {
+        val shape = GcodePreview.shape({ (start + markedSlab(scarf = true)).byteInputStream() })!!
+        assertEquals("the climbing seams don't make the layers look thinner", 0.2f, shape.stack.slice, 0.001f)
+        assertTrue(shape.stack.part.all { it != null })
+    }
+
+    @Test
+    fun supportsAreDrawnDimmerThanThePart() {
+        val part = block(100f, 110f, 120f, 110f, 20f, 0.2f, 4f)
+        val support = block(130f, 110f, 150f, 110f, 20f, 0.2f, 4f, label = ";TYPE:Support")
+        val helped = draw("M83\n$part$support")!!
+        val shown = draw("M83\n$part" + support.replace(";TYPE:Support", ";TYPE:Outer wall"))!!
+        assertEquals("they should show as much as the same thing in the part would", shown.covered(), helped.covered(), 0.02f)
+        assertTrue("and be dimmer than the part: ${helped.meanLight()}, ${shown.meanLight()}", helped.meanLight() < shown.meanLight() - 15f)
+    }
+
+    @Test
+    fun aBrimIsDrawnAndASkirtIsNot() {
+        val part = block(100f, 110f, 120f, 110f, 20f, 0.2f, 4f)
+        val around = "G1 X95 Y95 Z0.2 F6000\nG1 X125 Y95 E3\nG1 X125 Y125 E3\nG1 X95 Y125 E3\nG1 X95 Y95 E3\n"
+        val shape = { label: String -> GcodePreview.shape({ "M83\n$label\n$around$part".byteInputStream() })!! }
+        val brim = shape(";TYPE:Brim")
+        assertTrue("a brim is printed with the part", brim.stack.extra[0] != null)
+        for (skirt in listOf(";TYPE:Skirt", ";TYPE:Skirt/Brim")) assertTrue(shape(skirt).stack.extra.all { it == null })
+    }
+
+    @Test
+    fun aPartCanBeLookedAtFromEverySide() {
+        val lopsided = mushroom + block(120f, 110f, 140f, 110f, 4f, 0.2f, 3f)
+        val shape = GcodePreview.shape({ lopsided.byteInputStream() })!!
+        val front = GcodePreview.render(shape, width = 96, height = 96)!!
+        val back = GcodePreview.render(shape, width = 96, height = 96, turn = 2)!!
+        assertTrue("it should be seen differently", !front.light.contentEquals(back.light))
+        for (turn in 1 until GcodePreview.TURNS) {
+            val seen = GcodePreview.render(shape, width = 96, height = 96, turn = turn)!!
+            assertTrue("from side $turn there should be as much to see", seen.covered() > front.covered() / 2)
+        }
+    }
+
+    @Test
+    fun theShadowIsNotCountedAsThePart() {
+        val picture = draw(start + slab())!!
+        assertTrue("the part stands in a shadow", picture.shadow.any { it.toInt() != 0 })
+        val outside = picture.shadow.indices.first { picture.shadow[it].toInt() != 0 && picture.alpha[it].toInt() == 0 }
+        val shown = picture.shown(outside)
+        assertTrue("which shows as a bit of black", shown ushr 24 != 0 && shown and 0xFFFFFF == 0)
     }
 }

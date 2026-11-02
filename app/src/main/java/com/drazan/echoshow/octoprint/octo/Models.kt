@@ -13,6 +13,16 @@ enum class Phase {
     val canCancel: Boolean get() = this == PRINTING || this == STARTING || this == PAUSED || this == PAUSING || this == RESUMING
 }
 
+/**
+ * How fast the head moves by hand, in mm/min. Z has figures of its own, being by far
+ * the slower axis: 5 mm/s is as fast as an Ender-3 V3 SE takes it.
+ */
+enum class JogSpeed(val label: String, val xy: Int, val z: Int) {
+    SLOW("Slow", 600, 60),
+    NORMAL("Normal", 3000, 180),
+    FAST("Fast", 9000, 300),
+}
+
 data class Temp(val actual: Float?, val target: Float) {
     val heating: Boolean get() = target > 0f && (actual ?: 0f) < target - 3f
     val on: Boolean get() = target > 0f
@@ -97,7 +107,7 @@ data class PrintFile(
     /** Upload time, epoch seconds. */
     val date: Long,
     val estimatedPrintTime: Double?,
-    val filamentMm: Double?,
+    val filamentCm3: Double?,
     /** Relative URL of the slicer preview, when the Slicer Thumbnails plugin extracted one. */
     val thumbnail: String?,
     val lastPrintSuccess: Boolean?,

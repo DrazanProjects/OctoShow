@@ -31,8 +31,11 @@ class Thumbs(private val api: OctoApi, val drawn: Previews) {
      * it a picture, since a slicer's is only ever of the finished part. See
      * [Previews.grown].
      */
-    suspend fun grown(file: PrintFile, fraction: Float, layer: Int?, tint: Int, hot: Int): Previews.Growth? =
-        drawn.grown(file, fraction, layer, tint, hot)
+    suspend fun grown(file: PrintFile, fraction: Float, layer: Int?, tint: Int, hot: Int, turn: Int): Previews.Growth? =
+        drawn.grown(file, fraction, layer, tint, hot, turn)
+
+    /** See [Previews.lastGrown]. */
+    fun lastGrown(file: PrintFile, tint: Int, hot: Int, turn: Int): Previews.Growth? = drawn.lastGrown(file, tint, hot, turn)
 
     suspend fun load(link: String): Bitmap? {
         cache.get(link)?.let { return it }

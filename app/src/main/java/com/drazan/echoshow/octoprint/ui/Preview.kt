@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.toArgb
 import com.drazan.echoshow.octoprint.PrinterViewModel
 import com.drazan.echoshow.octoprint.octo.Previews
@@ -45,17 +46,26 @@ fun rememberPreview(vm: PrinterViewModel, file: PrintFile?): State<Shown> {
 }
 
 /**
+ * What [rememberGrowth] has of the part being printed: its [growth], once there
+ * is one, and whether one is [waiting] to be worked out or drawn.
+ */
+class Growing(val growth: Previews.Growth?, val waiting: Boolean)
+
+/**
  * The part as far as it has been printed: [file]'s drawing cut off at the layer
- * the job has reached, with that layer glowing. Null until there is one. A file
- * with a slicer's picture has none to begin with, as that picture can only ever
- * show the finished part; asking here has the display draw the file itself.
+ * the job has reached, with that layer glowing. A file with a slicer's picture
+ * has no drawing to begin with, as that picture can only ever show the finished
+ * part; the display draws the file itself as soon as the job starts, and asking
+ * here hurries that along.
  *
  * A new one is drawn each time the job has moved on by a step, or by a [layer]
- * when OctoPrint says which it is on. The last stays up meanwhile, so the part
- * grows without ever blinking out.
+ * when OctoPrint says which it is on, or the part is looked at from [turn] quarter
+ * turns round. The last stays up meanwhile, so the part grows without ever
+ * blinking out, and a screen coming back starts from the last one made rather
+ * than from nothing.
  */
 @Composable
-fun rememberGrowth(vm: PrinterViewModel, file: PrintFile?, reveal: Float?, layer: Int?): State<Previews.Growth?> {
+fun rememberGrowth(vm: PrinterViewModel, file: PrintFile?, reveal: Float?, layer: Int?, turn: Int): State<Growing> {
     val thumbs = vm.thumbs
     val tint = LocalDisplay.current.filament.color.toArgb()
     val hot = Ink.Ember.toArgb()
@@ -63,18 +73,20 @@ fun rememberGrowth(vm: PrinterViewModel, file: PrintFile?, reveal: Float?, layer
     val drawn = vm.previewsDrawn
     val step = reveal?.let { (it.coerceIn(0f, 1f) * GROWTH_STEPS).toInt() }
     return key(file?.origin, file?.path) {
-        produceState<Previews.Growth?>(null, thumbs, file?.date, tint, hot, step, layer, drawn) {
+        val last = remember(thumbs, tint, hot) { file?.let { thumbs?.lastGrown(it, tint, hot, turn) } }
+        produceState(Growing(last, waiting = true), thumbs, file?.date, tint, hot, step, layer, drawn, turn) {
             if (thumbs == null || file == null || step == null || file.isFolder) {
-                value = null
+                value = Growing(null, waiting = false)
                 return@produceState
             }
-            val grown = thumbs.grown(file, step / GROWTH_STEPS.toFloat(), layer, tint, hot)
-            if (grown != null) value = grown
+            val grown = thumbs.grown(file, step / GROWTH_STEPS.toFloat(), layer, tint, hot, turn)
+            if (grown != null) value = Growing(grown, waiting = false)
             // No drawing to grow, or one from before all of it was kept: have it made again.
             // Asked for more than once, since the fetch can fail while the Pi is busy starting
             // a print. When it does come, the count of drawings changes and this starts over.
             while (grown == null || grown.dated) {
-                vm.wantShape(file)
+                val coming = vm.wantShape(file)
+                if (grown == null) value = Growing(value.growth, waiting = coming)
                 delay(ASK_AGAIN_MS)
             }
         }

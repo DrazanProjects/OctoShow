@@ -15,6 +15,7 @@ import com.drazan.echoshow.octoprint.data.Prefs
 import com.drazan.echoshow.octoprint.data.Server
 import com.drazan.echoshow.octoprint.octo.FoundServer
 import com.drazan.echoshow.octoprint.octo.HeatPreset
+import com.drazan.echoshow.octoprint.octo.JogSpeed
 import com.drazan.echoshow.octoprint.octo.KeyPoll
 import com.drazan.echoshow.octoprint.octo.LayerInfo
 import com.drazan.echoshow.octoprint.octo.LocalDns
@@ -158,14 +159,15 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     private val previewAsks = Channel<PrintFile?>(Channel.UNLIMITED)
     private val previewFailed = HashSet<String>()
     /**
-     * Drawings wanted over again, because they were made before a drawing kept the part's
-     * shape or the order it is laid in. Each with when it was last asked for and how often
-     * it has been tried: fetching the file can fail while the Pi is busy starting a print,
-     * which is worth another go a little later, but not an endless string of them.
+     * Drawings wanted that can show a part growing: of a file that has only the slicer's
+     * picture, or one drawn before a drawing kept the part's shape or the order it is laid
+     * in. Each with when it was last asked for and how often it has been tried: fetching the
+     * file can fail while the Pi is busy starting a print, which is worth another go a little
+     * later, but not an endless string of them. Every job starts with a clean slate.
      */
     private val shapesWanted = HashMap<String, Redraw>()
 
-    private class Redraw(var askedAt: Long, var tries: Int = 0)
+    private class Redraw(var askedAt: Long, var tries: Int = 0, var drawing: Boolean = false)
 
     /** The smart plug the printer and the Pi are powered through, when one is set up. */
     var plug: Plug? by mutableStateOf(null)
@@ -283,6 +285,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         prompt = null
         previewProgress = null
         previewFailed.clear()
+        shapesWanted.clear()
         filesStale = true
         feedRate = 100
         flowRate = 100
@@ -350,6 +353,10 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         // the printer has just come free: time to carry on with the back catalogue
         if (!p.phase.busy && before?.busy != false) previewAsks.trySend(null)
         trackJobFile(p)
+        // The running job's drawing is made whatever is on screen. A job started while the
+        // screen is dark or showing the camera should have it ready by the time anyone looks.
+        val job = jobFile
+        if (p.phase.busy && job != null && job.path == p.file?.path && job.origin == p.file.origin) wantShape(job)
     }
 
     /** One finished run of one file: a reprint takes a different time, so it counts as new. */
@@ -378,6 +385,8 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 ended = null
                 feedRate = 100
                 flowRate = 100
+                // a drawing given up on during an earlier job gets another chance
+                shapesWanted.clear()
             }
             is LiveEvent.PrintEnded -> {
                 outcome = e.outcome
@@ -523,20 +532,26 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Something on screen wants to show [file] part-printed and its drawing can't be, or
-     * not well: it has the picture but not the shape behind it, or not the order the shape
-     * is laid in, or it has only ever had the slicer's picture and was never drawn here.
-     * The worker draws it. This can be called as often as liked: the worker hears of it
-     * once in a while, and a file is given up on after a few tries.
+     * [file] is being printed, or something on screen wants to show it part-printed, and
+     * its drawing can't show that, or not well: it has the picture but not the shape behind
+     * it, or not the order the shape is laid in, or it has only ever had the slicer's
+     * picture and was never drawn here. The worker draws it. This can be called as often as
+     * liked: the worker hears of it once in a while, and a file is given up on after a few
+     * tries.
+     *
+     * @return whether such a drawing may still come, as opposed to having been given up on.
      */
-    fun wantShape(file: PrintFile) {
-        if (file.isFolder) return
-        val key = thumbs?.drawn?.key(file) ?: return
+    fun wantShape(file: PrintFile): Boolean {
+        if (file.isFolder) return false
+        val key = thumbs?.drawn?.key(file) ?: return false
         val now = SystemClock.elapsedRealtime()
         val redraw = shapesWanted.getOrPut(key) { Redraw(askedAt = now - REDRAW_ASK_AGAIN_MS) }
-        if (redraw.tries >= REDRAW_TRIES || now - redraw.askedAt < REDRAW_ASK_AGAIN_MS) return
-        redraw.askedAt = now
-        previewAsks.trySend(file)
+        if (redraw.tries >= REDRAW_TRIES) return redraw.drawing
+        if (now - redraw.askedAt >= REDRAW_ASK_AGAIN_MS) {
+            redraw.askedAt = now
+            previewAsks.trySend(file)
+        }
+        return true
     }
 
     /**
@@ -583,21 +598,34 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
             val key = store.key(next)
             val redraw = shapesWanted[key]?.takeIf { withContext(Dispatchers.IO) { !store.hasShape(next) } }
             val again = redraw != null
-            if (key in previewFailed || !mayDraw(next) || (!again && withContext(Dispatchers.IO) { store.settled(next) })) continue
+            // a fetch that failed while going through the library is no reason to leave a job undrawn
+            if ((key in previewFailed && !again) || !mayDraw(next) || (!again && withContext(Dispatchers.IO) { store.settled(next) })) continue
 
-            redraw?.let { it.tries++ }
-            val outcome = store.draw(
-                file = next,
-                gentle = { printer?.phase?.busy == true },
-                keepGoing = { mayDraw(next) },
-                again = again,
-            )
+            redraw?.let {
+                it.tries++
+                it.drawing = true
+            }
+            val outcome = try {
+                store.draw(
+                    file = next,
+                    gentle = { printer?.phase?.busy == true },
+                    keepGoing = { mayDraw(next) },
+                    again = again,
+                )
+            } finally {
+                redraw?.drawing = false
+            }
             when (outcome) {
                 Previews.Outcome.DRAWN -> previewsDrawn++
                 // a drawing being made again still has its picture, and will be asked for again
                 Previews.Outcome.FAILED -> if (!again) previewFailed += key
-                Previews.Outcome.NOTHING -> previewsDrawn++
-                Previews.Outcome.ABANDONED -> Unit
+                Previews.Outcome.NOTHING -> {
+                    // nothing there to grow, and trying again won't change that
+                    redraw?.tries = REDRAW_TRIES
+                    previewsDrawn++
+                }
+                // dropped because the connection or the job went away, which is no fault of the file's
+                Previews.Outcome.ABANDONED -> redraw?.let { it.tries-- }
             }
             countPreviews(store)
         }
@@ -679,10 +707,16 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun jog(x: Double = 0.0, y: Double = 0.0, z: Double = 0.0) = act { jog(x, y, z) }
+    fun jog(x: Double = 0.0, y: Double = 0.0, z: Double = 0.0) {
+        val speed = display.value.jogSpeed
+        act { jog(x, y, z, if (z != 0.0) speed.z else speed.xy) }
+    }
     fun home(vararg axes: String) = act { home(*axes) }
     fun motorsOff() = act { gcode("M84") }
-    fun extrude(mm: Int) = act { extrude(mm) }
+    fun extrude(mm: Int) {
+        val speed = display.value.extrudeSpeed
+        act { extrude(mm, speed) }
+    }
     fun setFan(percent: Int) = act { gcode("M106 S${percent.coerceIn(0, 100) * 255 / 100}") }
 
     fun changeFeedRate(percent: Int) {
@@ -861,6 +895,8 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     fun setClock24(v: Boolean) = viewModelScope.launch { prefs.setClock24(v) }
     fun setOffAfter(min: Int) = viewModelScope.launch { prefs.setOffAfter(min) }
     fun setView(v: String) = viewModelScope.launch { prefs.setView(v) }
+    fun setJogSpeed(v: JogSpeed) = viewModelScope.launch { prefs.setJogSpeed(v) }
+    fun setExtrudeSpeed(mmPerMin: Int) = viewModelScope.launch { prefs.setExtrudeSpeed(mmPerMin) }
     fun forgetServer() = viewModelScope.launch { prefs.forgetServer() }
 
     /* ---------------- first-run setup ---------------- */
@@ -1042,7 +1078,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         const val HOW_IT_ENDED_MS = 8_000L
         /** How soon a drawing that is wanted again and hasn't come may be asked for once more, and how often it is tried. */
         const val REDRAW_ASK_AGAIN_MS = 60_000L
-        const val REDRAW_TRIES = 3
+        const val REDRAW_TRIES = 5
         const val AFTER_PRINT_PAUSE_S = 30
         const val SELF_CHECK_MS = 12 * 3_600_000L
         /** The app is the home screen, so it is running well inside this long after a boot. */

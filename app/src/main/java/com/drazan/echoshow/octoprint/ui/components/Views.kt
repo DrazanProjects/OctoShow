@@ -68,6 +68,7 @@ import com.drazan.echoshow.octoprint.octo.TempSample
 import com.drazan.echoshow.octoprint.octo.Webcam
 import com.drazan.echoshow.octoprint.octo.mjpegFrames
 import com.drazan.echoshow.octoprint.octo.snapshotFrames
+import com.drazan.echoshow.octoprint.ui.partSize
 import com.drazan.echoshow.octoprint.ui.theme.Ink
 import com.drazan.echoshow.octoprint.ui.theme.T
 import com.drazan.echoshow.octoprint.ui.theme.Type
@@ -201,9 +202,10 @@ fun CameraView(
  * wandering over it.
  *
  * Without a drawing, which is how a file with a slicer's picture starts out,
- * the picture is solid below the line the nozzle has reached and a ghost above
- * it. Once the drawing is there it takes the picture's place: the part can
- * only grow inside a picture taken from the same spot.
+ * only the ghost shows while one is [waiting] to be made. Once the drawing is
+ * there it takes the picture's place: the part can only grow inside a picture
+ * taken from the same spot. A file that can't be drawn at all is shown solid
+ * below the line the nozzle has reached and a ghost above it.
  */
 @Composable
 fun ModelPreview(
@@ -213,6 +215,7 @@ fun ModelPreview(
     plate: Boolean = true,
     note: String = "",
     grown: Previews.Growth? = null,
+    waiting: Boolean = false,
     laying: Boolean = false,
     layerDone: Float? = null,
 ) {
@@ -247,8 +250,12 @@ fun ModelPreview(
             }
             return@Box
         }
+        // a picture that fills itself with whatever it shows says nothing of how big that is
+        grown?.view?.takeIf { it.long > 0f }?.let {
+            T(partSize(it.long, it.broad, it.high), Type.Meta, Modifier.align(Alignment.BottomStart).padding(12.dp), color = Ink.Faint)
+        }
         // its own layer: the moving spot then redraws the picture and nothing around it
-        Canvas(Modifier.fillMaxSize().padding(if (plate) 18.dp else 0.dp).graphicsLayer()) {
+        Canvas(Modifier.fillMaxSize().padding(if (plate) 8.dp else 0.dp).graphicsLayer()) {
             val image = picture.asImageBitmap()
             val scale = min(size.width / image.width, size.height / image.height)
             val w = image.width * scale
@@ -327,6 +334,8 @@ fun ModelPreview(
                 }
                 return@Canvas
             }
+            // the drawing to grow it from is on its way: nothing yet that it would have to take back
+            if (waiting) return@Canvas
             clipRect(top = line) {
                 drawImage(image, dstOffset = at, dstSize = to, filterQuality = FilterQuality.High)
             }

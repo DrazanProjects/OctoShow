@@ -16,15 +16,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
 import com.drazan.echoshow.octoprint.BuildConfig
 import com.drazan.echoshow.octoprint.PrinterViewModel
 import com.drazan.echoshow.octoprint.data.DisplayPrefs
 import com.drazan.echoshow.octoprint.ui.components.ChipShape
 import com.drazan.echoshow.octoprint.ui.components.Choice
+import com.drazan.echoshow.octoprint.ui.components.DropdownField
+import com.drazan.echoshow.octoprint.ui.components.DropdownList
 import com.drazan.echoshow.octoprint.ui.components.HoldButton
 import com.drazan.echoshow.octoprint.ui.components.Icon
 import com.drazan.echoshow.octoprint.ui.components.Icons
@@ -36,6 +43,34 @@ import com.drazan.echoshow.octoprint.ui.theme.Type
 
 @Composable
 fun SettingsScreen(vm: PrinterViewModel, prefs: DisplayPrefs, onColors: () -> Unit, onPlug: () -> Unit) {
+    // where the screen-off field is, while its list of times is open
+    var offList by remember { mutableStateOf<Rect?>(null) }
+    Box(Modifier.fillMaxSize()) {
+        Settings(vm, prefs, onColors, onPlug, offListOpen = offList != null, onOffList = { offList = it })
+        offList?.let { anchor ->
+            DropdownList(
+                anchor = anchor,
+                options = offAfterChoices(prefs.offAfterMin),
+                selected = prefs.offAfterMin,
+                onSelect = {
+                    vm.setOffAfter(it)
+                    offList = null
+                },
+                onDismiss = { offList = null },
+            )
+        }
+    }
+}
+
+@Composable
+private fun Settings(
+    vm: PrinterViewModel,
+    prefs: DisplayPrefs,
+    onColors: () -> Unit,
+    onPlug: () -> Unit,
+    offListOpen: Boolean,
+    onOffList: (Rect) -> Unit,
+) {
     Row(Modifier.fillMaxSize().padding(start = 12.dp, top = 22.dp, end = 22.dp, bottom = 20.dp)) {
         Column(Modifier.weight(1.15f).fillMaxHeight()) {
             T("Display", Type.Title)
@@ -75,11 +110,7 @@ fun SettingsScreen(vm: PrinterViewModel, prefs: DisplayPrefs, onColors: () -> Un
             }
             Spacer(Modifier.height(20.dp))
             Setting("Turn the screen off", "After this long without a touch. Touching it anywhere brings it back.") {
-                Choice(
-                    listOf(0 to "Never", 1 to "1 min", 5 to "5 min", 15 to "15 min"),
-                    prefs.offAfterMin,
-                    { vm.setOffAfter(it) },
-                )
+                DropdownField(offAfterName(prefs.offAfterMin), offListOpen, onOffList)
             }
             Spacer(Modifier.height(20.dp))
             Setting("Clock", null) {
@@ -125,6 +156,23 @@ fun SettingsScreen(vm: PrinterViewModel, prefs: DisplayPrefs, onColors: () -> Un
             T("OctoShow ${BuildConfig.VERSION_NAME}", Type.Meta, color = Ink.Faint)
         }
     }
+}
+
+/** Minutes without a touch before the screen goes off, shortest first; 0, never, comes last. */
+private val OffAfterMinutes = listOf(1, 2, 5, 10, 15, 30, 60, 120, 240, 0)
+
+/** The times on offer, with whatever a display already has set kept among them. */
+private fun offAfterChoices(current: Int): List<Pair<Int, String>> {
+    val times = if (current in OffAfterMinutes) OffAfterMinutes
+    else (OffAfterMinutes - 0 + current).sorted() + 0
+    return times.map { it to offAfterName(it) }
+}
+
+private fun offAfterName(min: Int): String = when {
+    min <= 0 -> "Never"
+    min % 60 == 0 -> if (min == 60) "1 hour" else "${min / 60} hours"
+    min == 1 -> "1 minute"
+    else -> "$min minutes"
 }
 
 @Composable

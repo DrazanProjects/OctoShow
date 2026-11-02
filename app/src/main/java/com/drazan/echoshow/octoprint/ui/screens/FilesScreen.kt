@@ -42,7 +42,7 @@ import com.drazan.echoshow.octoprint.ui.components.SolidButton
 import com.drazan.echoshow.octoprint.ui.components.ThumbTile
 import com.drazan.echoshow.octoprint.ui.components.tap
 import com.drazan.echoshow.octoprint.ui.duration
-import com.drazan.echoshow.octoprint.ui.filamentLength
+import com.drazan.echoshow.octoprint.ui.filamentWeight
 import com.drazan.echoshow.octoprint.ui.prettyName
 import com.drazan.echoshow.octoprint.ui.rememberPreview
 import com.drazan.echoshow.octoprint.ui.theme.Ink
@@ -183,7 +183,7 @@ private fun ColumnScope.Detail(vm: PrinterViewModel, file: PrintFile, onAskPrint
     Spacer(Modifier.height(10.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(26.dp)) {
         file.estimatedPrintTime?.let { Figure("Print time", duration(it.toLong())) }
-        file.filamentMm?.takeIf { it > 0 }?.let { Figure("Filament", filamentLength(it)) }
+        file.filamentCm3?.takeIf { it > 0 }?.let { Figure("Filament", filamentWeight(it)) }
         when (file.lastPrintSuccess) {
             true -> Figure("Last time", "Finished")
             false -> Figure("Last time", "Failed")

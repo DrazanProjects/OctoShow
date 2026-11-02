@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -14,18 +15,23 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -42,6 +48,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -49,17 +57,25 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.drazan.echoshow.octoprint.ui.theme.Ink
 import com.drazan.echoshow.octoprint.ui.theme.T
 import com.drazan.echoshow.octoprint.ui.theme.Type
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** Shapes step down with importance: picture, action, small control. */
 val PanelShape = RoundedCornerShape(24.dp)
@@ -286,6 +302,95 @@ fun <V> Choice(
         }
     }
 }
+
+/**
+ * A choice among more than fit side by side: the one that is chosen, which
+ * opens a [DropdownList] of them all. [onOpen] is given where the field is on
+ * screen, for the list to drop from.
+ */
+@Composable
+fun DropdownField(text: String, open: Boolean, onOpen: (Rect) -> Unit, modifier: Modifier = Modifier) {
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    Row(
+        // one width whatever is chosen, so the field doesn't jump about as the choice changes
+        modifier.onGloballyPositioned { bounds = it.boundsInRoot() }
+            .width(200.dp).height(40.dp).tap { onOpen(bounds) }.clip(ChipShape)
+            .background(if (open) Ink.Line else Ink.PanelHi).padding(start = 14.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        T(text, Type.Label, Modifier.weight(1f), color = Ink.Bone, maxLines = 1)
+        Icon(if (open) Icons.Up else Icons.Down, Ink.Soft, size = 18.dp)
+    }
+}
+
+/**
+ * The list a [DropdownField] opens, laid over the screen it is on: put it last
+ * in a box that fills that screen. It drops below the field, or rises above it
+ * if there is no room below, or failing both sits wherever it fits. Touching
+ * anywhere off the list closes it without pressing what is under the touch.
+ */
+@Composable
+fun <V> DropdownList(
+    anchor: Rect,
+    options: List<Pair<V, String>>,
+    selected: V,
+    onSelect: (V) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val quiet = remember { MutableInteractionSource() }
+    var origin by remember { mutableStateOf<Offset?>(null) }
+    val scroll = rememberScrollState()
+    BoxWithConstraints(
+        Modifier.fillMaxSize()
+            .onGloballyPositioned { origin = it.positionInRoot() }
+            .clickable(interactionSource = quiet, indication = null, onClick = onDismiss)
+            // what the list covers part of is put back, so that half-hidden lines don't read as clutter
+            .background(Ink.Black.copy(alpha = 0.6f)),
+    ) {
+        val at = origin ?: return@BoxWithConstraints
+        val density = LocalDensity.current
+        val margin = with(density) { 12.dp.toPx() }
+        val gap = with(density) { 6.dp.toPx() }
+        val row = with(density) { DropdownRow.toPx() }
+        val inset = with(density) { DropdownInset.toPx() }
+        val field = anchor.translate(-at.x, -at.y)
+        val listW = max(field.width, with(density) { 200.dp.toPx() })
+        val listH = min(options.size * row + inset * 2, constraints.maxHeight - margin * 2)
+        val top = when {
+            field.bottom + gap + listH <= constraints.maxHeight - margin -> field.bottom + gap
+            field.top - gap - listH >= margin -> field.top - gap - listH
+            else -> (constraints.maxHeight - margin - listH).coerceAtLeast(margin)
+        }
+        val left = field.left.coerceIn(margin, (constraints.maxWidth - margin - listW).coerceAtLeast(margin))
+        LaunchedEffect(Unit) {
+            // should the list be longer than the screen, the current choice starts in view
+            val index = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+            scroll.scrollTo((index * row - listH / 2 + row / 2).roundToInt().coerceAtLeast(0))
+        }
+        Column(
+            Modifier.offset { IntOffset(left.roundToInt(), top.roundToInt()) }
+                .size(with(density) { listW.toDp() }, with(density) { listH.toDp() })
+                .clip(ButtonShape).background(Ink.PanelHi).border(1.dp, Ink.Line, ButtonShape)
+                // touches on the list stay on the list
+                .clickable(interactionSource = quiet, indication = null) {}
+                .verticalScroll(scroll).padding(DropdownInset),
+        ) {
+            options.forEach { (value, label) ->
+                val on = value == selected
+                Box(
+                    Modifier.fillMaxWidth().height(DropdownRow).tap { onSelect(value) }.clip(ChipShape)
+                        .background(if (on) Ink.Bone else Color.Transparent).padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    T(label, Type.Label, color = if (on) Ink.Black else Ink.Bone, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+private val DropdownRow = 40.dp
+private val DropdownInset = 6.dp
 
 @Composable
 fun Toggle(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {

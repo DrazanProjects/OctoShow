@@ -4,6 +4,7 @@
 //
 //   node server.js [port]
 //   GET /mock/set?scene=printing|paused|ready|done|offline|error|prompt|heating|dead&progress=0.4&tool=180&total=86000&display=Some_name.gcode
+//   GET /mock/sent     what the display has told the printer to do since the last time this was asked
 //
 // It also plays the Tasmota smart plug the printer and the Pi are powered through
 // (GET /cm?cmnd=Power%20Off). "dead" is the Pi with its power cut: nothing answers but the plug.
@@ -127,6 +128,7 @@ const S = {
   done: false,
   tool: { actual: 219.8, target: 220 }, bed: { actual: 55, target: 55 },
   fan: 100, lights: { 18: 60 }, prompt: null,
+  sent: [],               // commands to the printer, for a test to read
   speed: 60,              // simulated seconds per real second
   plug: true,             // the smart plug's relay
   dead: false,            // the Pi is off: OctoPrint answers nothing
@@ -290,6 +292,7 @@ const handler = async (req, res) => {
 
   // mock controls
   if (p === '/mock/set') { scene(u.searchParams.get('scene') || 'printing', Object.fromEntries(u.searchParams)); return json(res, 200, { ok: true, phase: S.phase }); }
+  if (p === '/mock/sent') { const sent = S.sent; S.sent = []; return json(res, 200, sent); }
 
   // the smart plug: Tasmota's web command page. A separate device in real life, so it
   // answers without a key and goes on answering when the Pi is off.
@@ -405,6 +408,7 @@ const handler = async (req, res) => {
     const b = await body(req);
     if (['offline', 'error'].includes(S.phase)) return json(res, 409, { error: 'Printer is not operational' });
     console.log('  ', JSON.stringify(b));
+    S.sent.push(b);
     if (p.endsWith('/tool') && b.command === 'target') S.tool.target = b.targets.tool0;
     if (p.endsWith('/bed') && b.command === 'target') S.bed.target = b.target;
     if (p.endsWith('/printhead') && ['jog', 'home'].includes(b.command) && S.phase === 'printing') return json(res, 409, { error: 'Printer is currently printing' });

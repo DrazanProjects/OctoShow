@@ -29,6 +29,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.drazan.echoshow.octoprint.PrinterViewModel
+import com.drazan.echoshow.octoprint.data.DisplayPrefs
+import com.drazan.echoshow.octoprint.octo.JogSpeed
 import com.drazan.echoshow.octoprint.octo.Light
 import com.drazan.echoshow.octoprint.octo.Phase
 import com.drazan.echoshow.octoprint.octo.Temp
@@ -53,7 +55,7 @@ private const val MIN_EXTRUDE_TEMP = 170f
  * movement column turns into speed and flow, since the head is not yours to move.
  */
 @Composable
-fun ControlsScreen(vm: PrinterViewModel) {
+fun ControlsScreen(vm: PrinterViewModel, prefs: DisplayPrefs) {
     val p = vm.printer ?: return
     val connected = p.phase != Phase.OFFLINE && p.phase != Phase.CONNECTING && p.phase != Phase.ERROR
     val busy = p.phase.busy
@@ -64,10 +66,10 @@ fun ControlsScreen(vm: PrinterViewModel) {
         if (busy) {
             Tune(vm, Modifier.weight(0.92f).fillMaxHeight())
         } else {
-            Move(vm, connected, Modifier.weight(0.92f).fillMaxHeight())
+            Move(vm, prefs, connected, Modifier.weight(0.92f).fillMaxHeight())
         }
         Divider()
-        Extras(vm, p.tool, connected, busy, Modifier.weight(1f).fillMaxHeight())
+        Extras(vm, prefs, p.tool, connected, busy, Modifier.weight(1f).fillMaxHeight())
     }
 }
 
@@ -147,7 +149,7 @@ private fun HeatRow(
 /* ---------------- move ---------------- */
 
 @Composable
-private fun Move(vm: PrinterViewModel, connected: Boolean, modifier: Modifier) {
+private fun Move(vm: PrinterViewModel, prefs: DisplayPrefs, connected: Boolean, modifier: Modifier) {
     var step by remember { mutableDoubleStateOf(10.0) }
     Column(modifier) {
         T("Move", Type.Title)
@@ -187,6 +189,10 @@ private fun Move(vm: PrinterViewModel, connected: Boolean, modifier: Modifier) {
 
         Spacer(Modifier.weight(1f))
 
+        T("Speed", Type.Label, color = Ink.Faint)
+        Spacer(Modifier.height(8.dp))
+        Choice(JogSpeed.entries.map { it to it.label }, prefs.jogSpeed, { vm.setJogSpeed(it) }, enabled = connected)
+        Spacer(Modifier.height(12.dp))
         T("Distance per tap, mm", Type.Label, color = Ink.Faint)
         Spacer(Modifier.height(8.dp))
         Choice(listOf(0.1 to "0.1", 1.0 to "1", 10.0 to "10", 50.0 to "50"), step, { step = it }, enabled = connected)
@@ -237,7 +243,7 @@ private fun TuneRow(label: String, value: Int, range: IntRange, onCommit: (Int) 
 /* ---------------- filament, fan, lights ---------------- */
 
 @Composable
-private fun Extras(vm: PrinterViewModel, tool: Temp?, connected: Boolean, busy: Boolean, modifier: Modifier) {
+private fun Extras(vm: PrinterViewModel, prefs: DisplayPrefs, tool: Temp?, connected: Boolean, busy: Boolean, modifier: Modifier) {
     var amount by remember { mutableIntStateOf(10) }
     val hot = (tool?.actual ?: 0f) >= MIN_EXTRUDE_TEMP
     val canFeed = connected && !busy && hot
@@ -252,6 +258,9 @@ private fun Extras(vm: PrinterViewModel, tool: Temp?, connected: Boolean, busy: 
         Spacer(Modifier.height(8.dp))
         if (canFeed) {
             Choice(listOf(5 to "5 mm", 10 to "10 mm", 50 to "50 mm"), amount, { amount = it })
+            Spacer(Modifier.height(8.dp))
+            // in mm/min; OctoPrint won't go past 5 mm/s unless its printer profile is changed
+            Choice(listOf(60 to "1 mm/s", 120 to "2 mm/s", 300 to "5 mm/s"), prefs.extrudeSpeed, { vm.setExtrudeSpeed(it) })
         } else {
             T(
                 when {

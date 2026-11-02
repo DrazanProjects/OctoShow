@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,8 +55,9 @@ import com.drazan.echoshow.octoprint.ui.components.tap
 import com.drazan.echoshow.octoprint.ui.degrees
 import com.drazan.echoshow.octoprint.ui.duration
 import com.drazan.echoshow.octoprint.ui.durationParts
-import com.drazan.echoshow.octoprint.ui.filamentLength
+import com.drazan.echoshow.octoprint.ui.filamentWeight
 import com.drazan.echoshow.octoprint.ui.fromEpochMillis
+import com.drazan.echoshow.octoprint.ui.Shown
 import com.drazan.echoshow.octoprint.ui.prettyName
 import com.drazan.echoshow.octoprint.ui.rememberGrowth
 import com.drazan.echoshow.octoprint.ui.rememberPreview
@@ -189,14 +191,9 @@ private fun ViewPanel(
     val cam = vm.info.webcam
     val api = vm.api
     val shown by rememberPreview(vm, file)
-    val thumb = shown.picture
     val wantCamera = cam != null && api != null && prefs.view == "camera"
-    // with the camera up there is no drawing to keep growing, so none is made
-    val grown by rememberGrowth(vm, file, reveal.takeIf { !wantCamera }, layer)
-    // A drawing of the layer before, still up while this layer's is being made, is of a layer
-    // that is finished: shown complete, not emptied to match how little of the new one is down.
-    val drawnLayer = grown?.layer
-    val done = if (drawnLayer != null && drawnLayer != layer) 1f else layerDone
+    var side by remember(file?.path) { mutableIntStateOf(0) }
+    val turn = SIDES[side]
     // The panel takes the camera's own shape so the picture fills it edge to edge.
     var camShape by remember { mutableFloatStateOf(16f / 9f) }
     val shape = if (wantCamera) camShape.coerceIn(4f / 3f, 16f / 9f) else 4f / 3f
@@ -209,14 +206,15 @@ private fun ViewPanel(
                 modifier = Modifier.fillMaxSize().tap(onClick = onFullCamera),
                 onAspect = { camShape = it },
             ) {
-                ModelPreview(thumb, reveal, Modifier.fillMaxSize(), note = shown.note, grown = grown, laying = laying, layerDone = done)
+                // only worked out while the camera is down: up, there is no part on screen to grow
+                PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, turn)
                 T(
                     "The camera isn't answering", Type.Meta, color = Ink.Soft,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
                 )
             }
         } else {
-            ModelPreview(thumb, reveal, Modifier.fillMaxSize(), note = shown.note, grown = grown, laying = laying, layerDone = done)
+            PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, turn)
         }
 
         if (cam != null) {
@@ -226,6 +224,18 @@ private fun ViewPanel(
             ) {
                 ViewChoice(Icons.Camera, prefs.view == "camera") { vm.setView("camera") }
                 ViewChoice(Icons.Cube, prefs.view != "camera") { vm.setView("model") }
+            }
+        }
+
+        // what stands behind a part while it prints, such as its supports, only shows from the other side
+        if (!wantCamera && reveal != null) {
+            Box(
+                Modifier.align(Alignment.TopEnd).padding(10.dp).size(44.dp)
+                    .tap { side = (side + 1) % SIDES.size }
+                    .clip(CircleShape).background(Ink.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Turn, Ink.Soft, size = 22.dp)
             }
         }
 
@@ -243,6 +253,33 @@ private fun ViewPanel(
             }
         }
     }
+}
+
+/** The order a part is shown round in, in quarter turns: its far side first, as a long part's ends say little. */
+private val SIDES = intArrayOf(0, 2, 1, 3)
+
+/** The file's picture, and while it prints, the part growing in it layer by layer. */
+@Composable
+private fun PartSoFar(
+    vm: PrinterViewModel,
+    file: PrintFile?,
+    shown: Shown,
+    reveal: Float?,
+    layer: Int?,
+    laying: Boolean,
+    layerDone: Float?,
+    turn: Int,
+) {
+    val growing by rememberGrowth(vm, file, reveal, layer, turn)
+    val grown = growing.growth
+    // A drawing of the layer before, still up while this layer's is being made, is of a layer
+    // that is finished: shown complete, not emptied to match how little of the new one is down.
+    val drawnLayer = grown?.layer
+    val done = if (drawnLayer != null && drawnLayer != layer) 1f else layerDone
+    ModelPreview(
+        shown.picture, reveal, Modifier.fillMaxSize(), note = shown.note,
+        grown = grown, waiting = growing.waiting, laying = laying, layerDone = done,
+    )
 }
 
 @Composable
@@ -540,6 +577,6 @@ private fun Fact(label: String, value: String) {
 fun FileFigures(file: PrintFile, modifier: Modifier = Modifier) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         file.estimatedPrintTime?.let { T(duration(it.toLong()), Type.Meta, maxLines = 1) }
-        file.filamentMm?.takeIf { it > 0 }?.let { T(filamentLength(it), Type.Meta, color = Ink.Faint, maxLines = 1) }
+        file.filamentCm3?.takeIf { it > 0 }?.let { T(filamentWeight(it), Type.Meta, color = Ink.Faint, maxLines = 1) }
     }
 }

@@ -38,16 +38,17 @@ class PreviewSamplesTest {
     private fun onPanel(p: GcodePreview.Picture): BufferedImage {
         val filament = intArrayOf(0xE9, 0xE4, 0xD8)
         val panel = intArrayOf(0x12, 0x14, 0x16)
-        val image = BufferedImage(p.size, p.size, BufferedImage.TYPE_INT_RGB)
-        for (i in 0 until p.size * p.size) {
-            val light = (p.light[i].toInt() and 0xFF) / 255f
-            val cover = (p.alpha[i].toInt() and 0xFF) / 255f
+        val image = BufferedImage(p.width, p.height, BufferedImage.TYPE_INT_RGB)
+        for (i in 0 until p.width * p.height) {
+            val shown = p.shown(i)
+            val light = (shown and 0xFF) / 255f
+            val cover = (shown ushr 24) / 255f
             var rgb = 0
             for (c in 0..2) {
                 val v = (filament[c] * light * cover + panel[c] * (1 - cover)).toInt().coerceIn(0, 255)
                 rgb = (rgb shl 8) or v
             }
-            image.setRGB(i % p.size, i / p.size, rgb)
+            image.setRGB(i % p.width, i / p.width, rgb)
         }
         return image
     }

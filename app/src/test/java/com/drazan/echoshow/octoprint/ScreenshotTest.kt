@@ -10,6 +10,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.drazan.echoshow.octoprint.data.Prefs
+import com.drazan.echoshow.octoprint.octo.JogSpeed
 import com.drazan.echoshow.octoprint.power.PowerStep
 import androidx.compose.ui.graphics.toArgb
 import com.drazan.echoshow.octoprint.ui.theme.Accents
@@ -17,6 +18,8 @@ import com.drazan.echoshow.octoprint.ui.theme.Grounds
 import com.drazan.echoshow.octoprint.ui.theme.Inks
 import com.github.takahirom.roborazzi.captureRoboImage
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -111,6 +114,27 @@ class ScreenshotTest {
                 settle(6000)
                 shot(a, "05b-printing-drawn-preview")
 
+                // A job of a file with the slicer's picture, never drawn here, started while the camera
+                // is up: the display draws it all the same, so the part grows the moment anyone looks.
+                tap(a, 110f, 52f)          // picture: the camera
+                settle(1500)
+                scene("printing", "file=3&progress=0.3")
+                settle(6000)
+                val stand = vm.jobFile
+                assertTrue(
+                    "the job's drawing should be made while the camera is up",
+                    stand != null && stand.thumbnail != null && vm.thumbs!!.drawn.hasShape(stand),
+                )
+                tap(a, 164f, 52f)          // picture: the preview
+                // the moment after: the part's ghost while its growth is worked out, and no line across it
+                settle(200)
+                a.window.decorView.captureRoboImage(File(out, "05d-switching-to-model.png").path)
+                settle(2500)
+                shot(a, "05e-drawn-while-camera-was-up")
+                tap(a, 464f, 52f)          // the part: its other side
+                settle(2500)
+                shot(a, "05f-turned-round")
+
                 // a job long enough for the time left to need its widest form
                 scene("printing", "progress=0.02&total=86000")
                 settle(3500)
@@ -170,6 +194,29 @@ class ScreenshotTest {
                 tap(a, 552f, 144f)
                 settle(800)
                 shot(a, "15b-controls-heating")
+                assertEquals(3000, sent().last { it.getString("command") == "jog" }.getInt("speed"))
+                // X and Y go at the speed chosen, Z at a slower one of its own
+                tap(a, 560f, 305f)         // Fast
+                settle(600)
+                assertEquals(JogSpeed.FAST, vm.display.value.jogSpeed)
+                tap(a, 552f, 144f)         // right
+                settle(500)
+                tap(a, 614f, 84f)          // up
+                settle(800)
+                assertEquals(listOf(9000, 300), sent().map { it.getInt("speed") })
+                // a hot nozzle brings out the filament choices
+                scene("ready", "tool=215")
+                settle(1500)
+                tap(a, 790f, 185f)         // 2 mm/s
+                settle(600)
+                tap(a, 875f, 83f)          // Extrude
+                settle(800)
+                assertEquals(120, sent().single { it.getString("command") == "extrude" }.getInt("speed"))
+                shot(a, "15c-controls-hot")
+                // both are kept, so back to what the shots further down expect
+                vm.setJogSpeed(JogSpeed.NORMAL)
+                vm.setExtrudeSpeed(300)
+                settle(600)
                 scene("printing", "progress=0.3")
                 settle(3000)
                 shot(a, "16-controls-while-printing")
@@ -178,6 +225,16 @@ class ScreenshotTest {
                 tap(a, 38f, 436f)
                 settle(1500)
                 shot(a, "17-settings")
+                tap(a, 150f, 311f)         // turn the screen off: the list of times
+                settle(800)
+                shot(a, "17a-screen-off-times")
+                tap(a, 150f, 122f)         // 2 minutes
+                settle(800)
+                assertEquals(2, vm.display.value.offAfterMin)
+                shot(a, "17c-screen-off-chosen")
+                // back to what the screen going off further down counts on
+                vm.setOffAfter(5)
+                settle(600)
                 tap(a, 750f, 269f)         // power plug
                 settle(800)
                 shot(a, "17b-power-plug")
@@ -353,6 +410,10 @@ class ScreenshotTest {
     private fun scene(name: String, more: String = ""): Boolean = get("$mock/mock/set?scene=$name&$more")
 
     private fun plugIsOn(): Boolean = URL("$mock/cm?cmnd=Power").readText().contains("\"ON\"")
+
+    /** What the display has told the printer to do since the last time this was asked. */
+    private fun sent(): List<JSONObject> =
+        JSONArray(URL("$mock/mock/sent").readText()).let { list -> List(list.length()) { list.getJSONObject(it) } }
 
     private fun get(url: String): Boolean = try {
         val c = URL(url).openConnection() as HttpURLConnection

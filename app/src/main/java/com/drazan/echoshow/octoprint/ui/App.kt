@@ -205,7 +205,7 @@ private fun BoxScope.Shell(vm: PrinterViewModel, prefs: DisplayPrefs) {
                 }
                 else -> when (screen) {
                     Screen.FILES -> FilesScreen(vm) { asking = it }
-                    Screen.CONTROLS -> ControlsScreen(vm)
+                    Screen.CONTROLS -> ControlsScreen(vm, prefs)
                     else -> StatusScreen(
                         vm = vm,
                         prefs = prefs,

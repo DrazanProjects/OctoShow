@@ -59,10 +59,15 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
     private fun routeFile(file: PrintFile) = File(dir, key(file) + ".route")
 
     /**
-     * Whether everything for showing the part being printed was kept with its picture:
-     * its shape, and the order it is laid in. Drawings from before those were kept have less.
+     * Whether everything for showing the part being printed was kept with its picture: its
+     * shape as it is drawn now, and the order it is laid in. Drawings from before have less.
      */
-    fun hasShape(file: PrintFile): Boolean = shapeFile(file).isFile && routeFile(file).isFile
+    fun hasShape(file: PrintFile): Boolean {
+        val from = shapeFile(file).takeIf { it.isFile } ?: return false
+        if (!routeFile(file).isFile) return false
+        return runCatching { DataInputStream(GZIPInputStream(from.inputStream().buffered())).use { it.readInt() == SHAPE_FORMAT } }
+            .getOrDefault(false)
+    }
 
     /** Drawn, or known to have nothing to draw: either way there is no reason to fetch it again. */
     fun settled(file: PrintFile): Boolean = picture(file).isFile || blank(file).isFile
@@ -77,6 +82,11 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
         val h = stored.height
         val pixels = IntArray(w * h)
         stored.getPixels(pixels, 0, w, 0, 0, w, h)
+        tinted(pixels, w, h, tint)
+    }
+
+    /** A picture of greys with alphas, as [GcodePreview.Picture.shown] gives them, in the color [tint]. */
+    private fun tinted(pixels: IntArray, w: Int, h: Int, tint: Int): Bitmap {
         val r = tint shr 16 and 0xFF
         val g = tint shr 8 and 0xFF
         val b = tint and 0xFF
@@ -85,7 +95,7 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
             val light = p and 0xFF
             pixels[i] = (p and 0xFF000000.toInt()) or (r * light / 255 shl 16) or (g * light / 255 shl 8) or (b * light / 255)
         }
-        Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
 
     /**
@@ -103,12 +113,13 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
      * the start of the layer to the end, as in [GcodePreview.Picture.trail].
      *
      * [dated] marks a drawing made before any order was kept: it can be shown,
-     * but is worth making again.
+     * but is worth making again. [view] says how big the part really is, which a
+     * picture that fills itself with whatever it shows no longer can.
      */
     class Growth(
         val whole: Bitmap, val part: Bitmap, val laying: Bitmap, val box: RectF?,
         val layer: Int? = null, val order: Bitmap? = null, val trail: FloatArray? = null,
-        val dated: Boolean = false,
+        val dated: Boolean = false, val view: GcodePreview.View? = null,
     ) {
         companion object {
             const val FIRST = 255
@@ -119,44 +130,46 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
 
     /**
      * The part as it stands while [layer] is being printed, in the given color,
-     * with that layer in [hot]. Failing a layer, or any record of the order this
-     * file's layers are laid in, it is the part with [fraction] of its height
-     * printed. Null when there is no shape to draw it from.
+     * with that layer in [hot], from [turn] quarter turns round. Failing a layer, or
+     * any record of the order this file's layers are laid in, it is the part with
+     * [fraction] of its height printed. Null when there is no shape to draw it from.
      */
-    suspend fun grown(file: PrintFile, fraction: Float, layer: Int?, tint: Int, hot: Int): Growth? {
+    suspend fun grown(file: PrintFile, fraction: Float, layer: Int?, tint: Int, hot: Int, turn: Int = 0): Growth? {
         val shape = withContext(Dispatchers.IO) { shapeOf(file) } ?: return null
-        val whole = wholeOf(file, tint) ?: return null
+        val whole = wholeOf(file, shape, tint, turn) ?: return null
         val dated = withContext(Dispatchers.IO) { !routeFile(file).isFile }
         val route = if (layer == null) null else withContext(Dispatchers.IO) { layingOf(file, layer) }
-        return withContext(Dispatchers.Default) {
+        val made = withContext(Dispatchers.Default) {
             // An order that was kept but doesn't read back whole is no reason to show nothing:
             // the part is then drawn by how much of its height is done, like one with no order.
-            val p = route?.let { runCatching { GcodePreview.render(shape, it, it.layers.single(), SIZE) }.getOrNull() }
+            val p = route?.let { runCatching { GcodePreview.render(shape, it, it.layers.single(), turn = turn) }.getOrNull() }
                 // one layer more than is finished: the one on top is the one being printed
-                ?: GcodePreview.render(shape, SIZE, (shape.top * fraction.coerceIn(0f, 1f) + LAYER_MM).coerceAtMost(shape.top))
+                ?: GcodePreview.render(shape, upTo = (shape.top * fraction.coerceIn(0f, 1f) + LAYER_MM).coerceAtMost(shape.top), turn = turn)
                 ?: return@withContext null
             val reached = p.reached
-            val n = p.size
-            val part = IntArray(n * n)
-            val laying = IntArray(n * n)
+            val w = p.width
+            val h = p.height
+            val part = IntArray(w * h)
+            val laying = IntArray(w * h)
             val r = tint shr 16 and 0xFF
             val g = tint shr 8 and 0xFF
             val b = tint and 0xFF
-            var left = n
-            var top = n
+            var left = w
+            var top = h
             var right = -1
             var bottom = -1
             for (i in part.indices) {
+                val shown = p.shown(i)
+                if (shown == 0) continue
+                val light = shown and 0xFF
+                part[i] = (shown and 0xFF000000.toInt()) or (r * light / 255 shl 16) or (g * light / 255 shl 8) or (b * light / 255)
                 val cover = p.alpha[i].toInt() and 0xFF
-                if (cover == 0) continue
-                val light = p.light[i].toInt() and 0xFF
-                part[i] = (cover shl 24) or (r * light / 255 shl 16) or (g * light / 255 shl 8) or (b * light / 255)
                 val fresh = p.fresh[i].toInt() and 0xFF
                 // with the order known, a spot the nozzle never visits is not part of the layer
-                if (fresh == 0 || (reached != null && reached[i].toInt() == 0)) continue
+                if (cover == 0 || fresh == 0 || (reached != null && reached[i].toInt() == 0)) continue
                 laying[i] = (cover * fresh / 255 shl 24) or (hot and 0xFFFFFF)
-                val x = i % n
-                val y = i / n
+                val x = i % w
+                val y = i / w
                 if (x < left) left = x
                 if (x > right) right = x
                 if (y < top) top = y
@@ -164,43 +177,58 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
             }
             var order: Bitmap? = null
             if (reached != null && right >= 0) {
-                var moments = IntArray(n * n) { if (laying[it] != 0) reached[it].toInt() and 0xFF else 0 }
+                var moments = IntArray(w * h) { if (laying[it] != 0) reached[it].toInt() and 0xFF else 0 }
                 // The screen blends neighbouring pixels, and blending with nothing at the layer's
                 // edge would nibble at it: so each time is carried a few pixels past the edge.
-                repeat(3) { moments = spread(moments, n) }
+                repeat(3) { moments = spread(moments, w, h) }
                 val steps = Growth.FIRST - Growth.LAST
                 order = Bitmap.createBitmap(
-                    IntArray(n * n) { i ->
+                    IntArray(w * h) { i ->
                         val m = moments[i]
                         if (m == 0) 0 else ((Growth.FIRST - (m - 1) * steps / (GcodePreview.MOMENTS - 1)) shl 24) or 0xFFFFFF
                     },
-                    n, n, Bitmap.Config.ARGB_8888,
+                    w, h, Bitmap.Config.ARGB_8888,
                 )
             }
             Growth(
                 whole = whole,
-                part = Bitmap.createBitmap(part, n, n, Bitmap.Config.ARGB_8888),
-                laying = Bitmap.createBitmap(laying, n, n, Bitmap.Config.ARGB_8888),
-                box = if (right < 0) null else RectF(left / n.toFloat(), top / n.toFloat(), (right + 1f) / n, (bottom + 1f) / n),
+                part = Bitmap.createBitmap(part, w, h, Bitmap.Config.ARGB_8888),
+                laying = Bitmap.createBitmap(laying, w, h, Bitmap.Config.ARGB_8888),
+                box = if (right < 0) null else RectF(left / w.toFloat(), top / h.toFloat(), (right + 1f) / w, (bottom + 1f) / h),
                 layer = route?.layers?.single()?.number.takeIf { reached != null },
                 order = order,
                 trail = p.trail.takeIf { order != null },
                 dated = dated,
+                view = shape.view(turn),
             )
         }
+        if (made != null) lastGrowth = growthKey(file, tint, hot, turn) to made
+        return made
     }
 
+    /**
+     * The last [grown] made of [file] in these colors, if it was the last made of anything.
+     * A screen coming back puts this up at once while it works out a newer one, instead of
+     * starting from no drawing at all.
+     */
+    fun lastGrown(file: PrintFile, tint: Int, hot: Int, turn: Int = 0): Growth? =
+        lastGrowth?.takeIf { it.first == growthKey(file, tint, hot, turn) }?.second
+
+    @Volatile private var lastGrowth: Pair<String, Growth>? = null
+
+    private fun growthKey(file: PrintFile, tint: Int, hot: Int, turn: Int) = "${key(file)}:$tint:$hot:$turn"
+
     /** Gives every pixel that has no time the earliest of those next to it. */
-    private fun spread(src: IntArray, n: Int): IntArray {
+    private fun spread(src: IntArray, w: Int, h: Int): IntArray {
         val out = src.copyOf()
-        for (y in 0 until n) for (x in 0 until n) {
-            if (src[y * n + x] != 0) continue
+        for (y in 0 until h) for (x in 0 until w) {
+            if (src[y * w + x] != 0) continue
             var best = 0
-            for (yy in maxOf(0, y - 1)..minOf(n - 1, y + 1)) for (xx in maxOf(0, x - 1)..minOf(n - 1, x + 1)) {
-                val v = src[yy * n + xx]
+            for (yy in maxOf(0, y - 1)..minOf(h - 1, y + 1)) for (xx in maxOf(0, x - 1)..minOf(w - 1, x + 1)) {
+                val v = src[yy * w + xx]
                 if (v != 0 && (best == 0 || v < best)) best = v
             }
-            out[y * n + x] = best
+            out[y * w + x] = best
         }
         return out
     }
@@ -210,10 +238,14 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
     /** And the last finished picture, in the color it was wanted in, for the same reason. */
     private var heldWhole: Triple<String, Int, Bitmap>? = null
 
-    private suspend fun wholeOf(file: PrintFile, tint: Int): Bitmap? {
-        val key = key(file)
+    private suspend fun wholeOf(file: PrintFile, shape: GcodePreview.Shape, tint: Int, turn: Int): Bitmap? {
+        val key = "${key(file)}:$turn"
         heldWhole?.takeIf { it.first == key && it.second == tint }?.let { return it.third }
-        return load(file, tint)?.also { heldWhole = Triple(key, tint, it) }
+        // only the side first shown is stored; the others are looked at from time to time, and quick to draw
+        val whole = if (turn == 0) load(file, tint) else withContext(Dispatchers.Default) {
+            GcodePreview.render(shape, turn = turn)?.let { p -> tinted(IntArray(p.width * p.height) { p.shown(it) }, p.width, p.height, tint) }
+        }
+        return whole?.also { heldWhole = Triple(key, tint, it) }
     }
 
     private fun shapeOf(file: PrintFile): GcodePreview.Shape? {
@@ -221,7 +253,7 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
         held?.takeIf { it.first == key }?.let { return it.second }
         val from = shapeFile(file).takeIf { it.isFile } ?: return null
         return runCatching {
-            DataInputStream(GZIPInputStream(from.inputStream().buffered())).use { src ->
+            DataInputStream(GZIPInputStream(from.inputStream().buffered()).buffered()).use { src ->
                 if (src.readInt() != SHAPE_FORMAT) return null
                 val originX = src.readFloat()
                 val originY = src.readFloat()
@@ -229,15 +261,29 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
                 val cols = src.readInt()
                 val rows = src.readInt()
                 val top = src.readFloat()
-                if (cols !in 1..MAX_SIDE || rows !in 1..MAX_SIDE) return null
-                GcodePreview.Shape(originX, originY, cell, cols, rows, top, FloatArray(cols * rows) { src.readUnsignedShort() / 100f })
+                val slices = src.readInt()
+                val slice = src.readFloat()
+                if (cols !in 1..MAX_SIDE || rows !in 1..MAX_SIDE || slices !in 1..MAX_SLICES) return null
+                val height = FloatArray(cols * rows) { src.readUnsignedShort() / 100f }
+                val stack = GcodePreview.Stack(cols, rows, slices, slice)
+                val bytes = ByteArray(stack.words * rows * 8)
+                fun bits(): LongArray? {
+                    if (!src.readBoolean()) return null
+                    src.readFully(bytes)
+                    return LongArray(stack.words * rows).also { ByteBuffer.wrap(bytes).asLongBuffer().get(it) }
+                }
+                for (s in 0 until slices) {
+                    stack.part[s] = bits()
+                    stack.extra[s] = bits()
+                }
+                GcodePreview.Shape(originX, originY, cell, cols, rows, top, height, stack)
             }
         }.getOrNull()?.also { held = key to it }
     }
 
     private fun saveShape(shape: GcodePreview.Shape, to: File) {
         val part = File(to.path + ".part")
-        DataOutputStream(GZIPOutputStream(part.outputStream().buffered())).use { out ->
+        DataOutputStream(GZIPOutputStream(part.outputStream().buffered()).buffered()).use { out ->
             out.writeInt(SHAPE_FORMAT)
             out.writeFloat(shape.originX)
             out.writeFloat(shape.originY)
@@ -245,8 +291,23 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
             out.writeInt(shape.cols)
             out.writeInt(shape.rows)
             out.writeFloat(shape.top)
+            val stack = shape.stack
+            out.writeInt(stack.slices)
+            out.writeFloat(stack.slice)
             // hundredths of a millimetre: finer than any layer, and half the size of the floats
             for (h in shape.height) out.writeShort((h * 100f).roundToInt().coerceIn(0, 0xFFFF))
+            val bytes = ByteBuffer.allocate(stack.words * shape.rows * 8)
+            fun write(bits: LongArray?) {
+                out.writeBoolean(bits != null)
+                if (bits == null) return
+                bytes.clear()
+                bytes.asLongBuffer().put(bits)
+                out.write(bytes.array())
+            }
+            for (s in 0 until stack.slices) {
+                write(stack.part[s])
+                write(stack.extra[s])
+            }
         }
         if (!part.moveOver(to)) part.delete()
     }
@@ -355,7 +416,7 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
                 }
                 val read = withContext(Dispatchers.Default) { GcodePreview.read({ source.inputStream() }, alive) }
                 val shape = read?.shape
-                val drawn = shape?.let { withContext(Dispatchers.Default) { GcodePreview.render(it, SIZE, keepGoing = alive) } }
+                val drawn = shape?.let { withContext(Dispatchers.Default) { GcodePreview.render(it, keepGoing = alive) } }
                 if (read == null || shape == null || drawn == null) {
                     if (!alive()) return@withContext Outcome.ABANDONED
                     // a picture that is already there stays; there was just no shape to add to it
@@ -422,12 +483,8 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
     }
 
     private fun save(picture: GcodePreview.Picture, to: File) {
-        val pixels = IntArray(picture.size * picture.size) { i ->
-            val light = picture.light[i].toInt() and 0xFF
-            val cover = picture.alpha[i].toInt() and 0xFF
-            (cover shl 24) or (light shl 16) or (light shl 8) or light
-        }
-        val bitmap = Bitmap.createBitmap(pixels, picture.size, picture.size, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(picture.width * picture.height) { picture.shown(it) }
+        val bitmap = Bitmap.createBitmap(pixels, picture.width, picture.height, Bitmap.Config.ARGB_8888)
         // written under another name first, so a half-written picture is never mistaken for a finished one
         val part = File(to.path + ".part")
         part.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -438,8 +495,8 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
     }
 
     private companion object {
-        const val SIZE = 320
-        const val SHAPE_FORMAT = 1
+        /** Raised when what is stored changes, or a drawing already stored would look wrong: each is made again when next printed. */
+        const val SHAPE_FORMAT = 3
         const val ROUTE_FORMAT = 1
         /** What a route's list of layers says of each: number, height, where its squares sit, how many bytes they pack to. */
         const val ROUTE_ENTRY_BYTES = 4 + 4 + 4 * 2 + 4
@@ -447,6 +504,7 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
         const val MAX_LAYERS = 100_000
         /** Likewise for how many squares a kept map has along a side, and how many bytes one layer packs to. */
         const val MAX_SIDE = 4096
+        const val MAX_SLICES = 4096
         const val MAX_LAYER_BYTES = 4 * 1024 * 1024
         /** A usual layer. Only decides how thick the glowing top of a part-printed picture is. */
         const val LAYER_MM = 0.2f

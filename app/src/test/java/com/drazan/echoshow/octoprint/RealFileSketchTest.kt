@@ -42,16 +42,16 @@ class RealFileSketchTest {
         for (number in listOf(route.layers.size / 8, route.layers.size / 2)) {
             val layer = route.layers.firstOrNull { it.number == number } ?: continue
             val drawing = System.currentTimeMillis()
-            val p = GcodePreview.render(reading.shape, route, layer, SIZE)!!
+            val p = GcodePreview.render(reading.shape, route, layer)!!
             println("layer $number at ${layer.z} mm: ${layer.width} x ${layer.height} squares, drawn in ${System.currentTimeMillis() - drawing} ms")
             val reached = p.reached!!
             val trail = p.trail!!
             for (done in 0..100 step 2) {
                 val upTo = 1 + done * (GcodePreview.MOMENTS - 1) / 100
-                val image = BufferedImage(SIZE, SIZE, BufferedImage.TYPE_INT_RGB)
-                val nx = trail[2 * (upTo - 1)] * SIZE
-                val ny = trail[2 * (upTo - 1) + 1] * SIZE
-                for (i in 0 until SIZE * SIZE) {
+                val image = BufferedImage(p.width, p.height, BufferedImage.TYPE_INT_RGB)
+                val nx = trail[2 * (upTo - 1)] * p.width
+                val ny = trail[2 * (upTo - 1) + 1] * p.height
+                for (i in 0 until p.width * p.height) {
                     val cover = (p.alpha[i].toInt() and 0xFF) / 255f
                     val light = (p.light[i].toInt() and 0xFF) / 255f
                     var r = 0xD8 * light; var g = 0xD4 * light; var b = 0xCC * light
@@ -59,19 +59,15 @@ class RealFileSketchTest {
                     val moment = reached[i].toInt() and 0xFF
                     if (fresh > 0f && moment != 0 && moment <= upTo) {
                         // down already: ember, brighter the nearer the nozzle
-                        val glow = (1f - hypot(i % SIZE - nx, i / SIZE - ny) / 26f).coerceIn(0f, 1f)
+                        val glow = (1f - hypot(i % p.width - nx, i / p.width - ny) / 26f).coerceIn(0f, 1f)
                         val share = fresh * (0.62f + 0.38f * glow)
                         r += (0xFF - r) * share; g += ((0x6B + 0x70 * glow) - g) * share; b += ((0x2C + 0x50 * glow) - b) * share
                     }
                     val rgb = ((0x12 + (r - 0x12) * cover).toInt() shl 16) or ((0x12 + (g - 0x12) * cover).toInt() shl 8) or (0x12 + (b - 0x12) * cover).toInt()
-                    image.setRGB(i % SIZE, i / SIZE, rgb)
+                    image.setRGB(i % p.width, i / p.width, rgb)
                 }
                 ImageIO.write(image, "png", File(out, "real-%03d-%03d.png".format(number, done)))
             }
         }
-    }
-
-    private companion object {
-        const val SIZE = 320
     }
 }

@@ -229,9 +229,13 @@ class OctoApi(
         JSONObject().put("command", "target").put("target", celsius),
     )
 
-    suspend fun jog(x: Double = 0.0, y: Double = 0.0, z: Double = 0.0) = send(
+    /**
+     * Millimetres, at [speed] mm/min. Left to itself OctoPrint takes the slowest of the axes
+     * it is given, and with all three named here that would have X and Y crawl at Z's pace.
+     */
+    suspend fun jog(x: Double = 0.0, y: Double = 0.0, z: Double = 0.0, speed: Int) = send(
         "api/printer/printhead",
-        JSONObject().put("command", "jog").put("x", x).put("y", y).put("z", z),
+        JSONObject().put("command", "jog").put("x", x).put("y", y).put("z", z).put("speed", speed),
     )
 
     suspend fun home(vararg axes: String) = send(
@@ -239,10 +243,13 @@ class OctoApi(
         JSONObject().put("command", "home").put("axes", JSONArray(axes.toList())),
     )
 
-    /** Positive pushes filament out, negative pulls it back. Millimetres. */
-    suspend fun extrude(mm: Int) = send(
+    /**
+     * Positive pushes filament out, negative pulls it back. Millimetres, at [speed] mm/min,
+     * which OctoPrint holds to the E speed in its printer profile (300 unless changed there).
+     */
+    suspend fun extrude(mm: Int, speed: Int) = send(
         "api/printer/tool",
-        JSONObject().put("command", "extrude").put("amount", mm),
+        JSONObject().put("command", "extrude").put("amount", mm).put("speed", speed),
     )
 
     suspend fun setFeedRate(percent: Int) = send(
