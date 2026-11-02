@@ -36,6 +36,7 @@ Optional, and used when present:
 | LightControls plugin | the light switch on the camera view and in Controls |
 | A camera set up in OctoPrint, as an MJPEG stream | the live view |
 | A smart plug running Tasmota, powering the printer and the Pi | switching everything off and back on |
+| Firmware that reports the nozzle's real position | a part drawn where the nozzle really is, see below |
 
 None of these is needed. On a plain OctoPrint with no camera and no plugins the
 display still shows the print, the time left and the temperatures, draws the part
@@ -77,6 +78,21 @@ it: usually outlines first, then the infill in whichever direction it runs, with
 glow where the nozzle is. This needs the Dashboard plugin, and the file has to have
 been uploaded while that plugin was installed, because the plugin marks the layers
 as OctoPrint stores the file. Without it the part rises by plain percentage.
+
+OctoPrint and its plugins only know what has been sent to the printer, and the printer
+holds a queue of moves, so on long straight lines those figures can be well ahead of the
+nozzle. Firmware built to say where the nozzle really is closes that gap. Printing a
+line like this to the serial port a few times a second, with the position in millimetres,
+the extruder's position, and the milliseconds since the printer started, is all it
+takes:
+
+```
+REALPOS 123.45 67.89 1.20 1234.56 987654
+```
+
+The display then draws the layer the nozzle is really on, up to the spot it has really
+reached, about three quarters of a second behind it. Stock Marlin doesn't do this: `M114`
+and `M154` report the end of the queue, not the nozzle.
 
 **Files** lists the printable files in OctoPrint's own storage (not the printer's
 SD card), folder by folder, newest first, with previews, print times and how much

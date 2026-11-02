@@ -1,5 +1,6 @@
 package com.drazan.echoshow.octoprint.ui.screens
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +20,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -90,7 +94,15 @@ fun StatusScreen(
     // What the picture and the "print it" offer are about: the running job, or the newest upload.
     val subject = if (active || outcome != null) vm.jobFile else (vm.files.newest ?: vm.jobFile)
 
-    val layerFraction = vm.layers.let { l ->
+    // where the nozzle really is, if the firmware says, and otherwise what has been sent to it
+    val following = vm.nozzleLayer.takeIf { active }
+    val layers = if (following != null) vm.layers.copy(current = following) else vm.layers
+    if (active && vm.nozzleReporting) {
+        LaunchedEffect(Unit) {
+            while (true) withFrameMillis { vm.followNozzle(SystemClock.elapsedRealtime()) }
+        }
+    }
+    val layerFraction = layers.let { l ->
         val total = l.total
         if (l.known && total != null) (((l.current ?: 1) - 1).coerceAtLeast(0).toFloat() / total).coerceIn(0f, 1f) else null
     }
@@ -108,9 +120,10 @@ fun StatusScreen(
                 prefs = prefs,
                 file = subject,
                 reveal = if (active) layerFraction ?: p.fraction else null,
-                layer = vm.layers.current?.takeIf { active && vm.layers.known },
+                layer = layers.current?.takeIf { active && layers.known },
                 laying = stackMode == StackMode.PRINTING,
-                layerDone = vm.layers.layerProgress?.takeIf { vm.layers.known }?.let { it / 100f },
+                layerDone = vm.layers.layerProgress?.takeIf { layers.known }?.let { it / 100f },
+                liveDone = vm.nozzleDone.takeIf { following != null },
                 onFullCamera = onFullCamera,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -126,10 +139,11 @@ fun StatusScreen(
         Spacer(Modifier.width(22.dp))
         LayerStack(
             fraction = p.fraction,
-            layers = vm.layers,
+            layers = layers,
             mode = stackMode,
             modifier = Modifier.width(118.dp).fillMaxHeight(),
-            callout = { LayerCallout(vm.layers, p.currentZ) },
+            liveDone = vm.nozzleDone.takeIf { following != null },
+            callout = { LayerCallout(layers, p.currentZ) },
         )
         Spacer(Modifier.width(6.dp))
 
@@ -185,6 +199,8 @@ private fun ViewPanel(
     laying: Boolean,
     /** How much of the layer being printed is down, 0..1, when OctoPrint says. */
     layerDone: Float?,
+    /** The same, from the nozzle's real position, when that is known. */
+    liveDone: State<Float>?,
     onFullCamera: () -> Unit,
     modifier: Modifier,
 ) {
@@ -207,14 +223,14 @@ private fun ViewPanel(
                 onAspect = { camShape = it },
             ) {
                 // only worked out while the camera is down: up, there is no part on screen to grow
-                PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, turn)
+                PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, liveDone, turn)
                 T(
                     "The camera isn't answering", Type.Meta, color = Ink.Soft,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
                 )
             }
         } else {
-            PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, turn)
+            PartSoFar(vm, file, shown, reveal, layer, laying, layerDone, liveDone, turn)
         }
 
         if (cam != null) {
@@ -268,6 +284,7 @@ private fun PartSoFar(
     layer: Int?,
     laying: Boolean,
     layerDone: Float?,
+    liveDone: State<Float>?,
     turn: Int,
 ) {
     val growing by rememberGrowth(vm, file, reveal, layer, turn)
@@ -275,10 +292,12 @@ private fun PartSoFar(
     // A drawing of the layer before, still up while this layer's is being made, is of a layer
     // that is finished: shown complete, not emptied to match how little of the new one is down.
     val drawnLayer = grown?.layer
-    val done = if (drawnLayer != null && drawnLayer != layer) 1f else layerDone
+    val behind = drawnLayer != null && drawnLayer != layer
     ModelPreview(
         shown.picture, reveal, Modifier.fillMaxSize(), note = shown.note,
-        grown = grown, waiting = growing.waiting, laying = laying, layerDone = done,
+        grown = grown, waiting = growing.waiting, laying = laying,
+        layerDone = if (behind) 1f else layerDone ?: liveDone?.let { 0f },
+        liveDone = liveDone.takeIf { !behind },
     )
 }
 

@@ -3,6 +3,8 @@ package com.drazan.echoshow.octoprint
 import android.app.Application
 import android.content.Context
 import android.os.SystemClock
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +21,7 @@ import com.drazan.echoshow.octoprint.octo.JogSpeed
 import com.drazan.echoshow.octoprint.octo.KeyPoll
 import com.drazan.echoshow.octoprint.octo.LayerInfo
 import com.drazan.echoshow.octoprint.octo.LocalDns
+import com.drazan.echoshow.octoprint.octo.NozzleFollower
 import com.drazan.echoshow.octoprint.octo.Light
 import com.drazan.echoshow.octoprint.octo.Link
 import com.drazan.echoshow.octoprint.octo.LiveEvent
@@ -143,6 +146,25 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var flowRate by mutableStateOf(100)
         private set
+    /**
+     * The layer the nozzle is really on, when the firmware says where it is and the file's
+     * layers are known. Null otherwise, and then [layers] is the best there is, which is what
+     * has been sent to the printer and so somewhat ahead of the nozzle.
+     */
+    var nozzleLayer: Int? by mutableStateOf(null)
+        private set
+    /** How high that layer is. */
+    var nozzleHeight: Float? by mutableStateOf(null)
+        private set
+    /** Readings of the nozzle's real position are coming in. */
+    var nozzleReporting by mutableStateOf(false)
+        private set
+    private val nozzleFilled = mutableFloatStateOf(0f)
+    /** How far through [nozzleLayer] the nozzle has got, 0..1. Changes with every frame, so it is read where it is drawn. */
+    val nozzleDone: State<Float> get() = nozzleFilled
+    private val nozzle = NozzleFollower()
+    /** The layers of a file being read, or the map of a layer: one at a time is plenty. */
+    private var nozzleWork: Job? = null
 
     var api: OctoApi? = null
         private set
@@ -283,6 +305,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         jobFile = null
         outcome = null
         prompt = null
+        forgetNozzle()
         previewProgress = null
         previewFailed.clear()
         shapesWanted.clear()
@@ -308,6 +331,12 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         launch { live.temps.collect { temps = it } }
         launch { live.prompt.collect { prompt = it } }
         launch { live.events.collect { onEvent(it) } }
+        launch {
+            live.fixes.collect {
+                nozzle.add(it, SystemClock.elapsedRealtime())
+                nozzleReporting = true
+            }
+        }
         launch {
             var wasOnline = false
             live.link.collectLatest { l ->
@@ -385,6 +414,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 ended = null
                 feedRate = 100
                 flowRate = 100
+                forgetNozzle()
                 // a drawing given up on during an earlier job gets another chance
                 shapesWanted.clear()
             }
@@ -729,6 +759,61 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         val v = percent.coerceIn(75, 125)
         flowRate = v
         act { setFlowRate(v) }
+    }
+
+    /**
+     * Brings the nozzle's real position up to [now], for a screen that is showing it. Called
+     * for every frame while readings are coming in.
+     */
+    fun followNozzle(now: Long) {
+        val live = nozzle.look(now)
+        if (!live) {
+            nozzleReporting = false
+            nozzleLayer = null
+            nozzleHeight = null
+            return
+        }
+        val file = jobFile ?: return
+        if (nozzle.knowsLayers) {
+            val layer = nozzle.layer
+            if (layer != nozzleLayer) {
+                nozzleLayer = layer
+                nozzleHeight = layer?.let { nozzle.height }
+                if (layer != null) readNozzleMap(file, layer)
+            }
+            nozzleFilled.floatValue = nozzle.done
+        } else {
+            readNozzleLayers(file)
+        }
+    }
+
+    private fun readNozzleLayers(file: PrintFile) {
+        val store = thumbs?.drawn ?: return
+        if (nozzleWork?.isActive == true) return
+        nozzleWork = session?.launch {
+            val found = withContext(Dispatchers.IO) { store.layersOf(file) }
+            if (found != null) nozzle.useLayers(found.first, found.second)
+            // a file not drawn yet: this is asked again once a second or so, as the frames go by
+            else delay(NOZZLE_ASK_AGAIN_MS)
+        }
+    }
+
+    private fun readNozzleMap(file: PrintFile, layer: Int) {
+        val store = thumbs?.drawn ?: return
+        nozzleWork?.cancel()
+        nozzleWork = session?.launch {
+            val map = withContext(Dispatchers.IO) { store.mapOf(file, layer) }
+            if (map != null) nozzle.useMap(map)
+        }
+    }
+
+    private fun forgetNozzle() {
+        nozzleWork?.cancel()
+        nozzle.reset()
+        nozzleLayer = null
+        nozzleHeight = null
+        nozzleReporting = false
+        nozzleFilled.floatValue = 0f
     }
 
     fun answerPrompt(choice: Int) {
@@ -1083,6 +1168,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         const val SELF_CHECK_MS = 12 * 3_600_000L
         /** The app is the home screen, so it is running well inside this long after a boot. */
         const val BOOT_WINDOW_MS = 180_000L
+        const val NOZZLE_ASK_AGAIN_MS = 1_000L
         /** A display that is switching itself off is gone within a few seconds. */
         const val DISPLAY_OFF_GRACE_MS = 20_000L
         /** A Pi 3 takes a minute or two from power to OctoPrint answering. */

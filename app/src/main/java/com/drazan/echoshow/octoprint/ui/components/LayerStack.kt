@@ -55,6 +55,7 @@ fun LayerStack(
     mode: StackMode,
     modifier: Modifier = Modifier,
     barWidth: Dp = 46.dp,
+    liveDone: State<Float>? = null,
     callout: (@Composable () -> Unit)? = null,
 ) {
     val filament = LocalDisplay.current.filament.color
@@ -68,6 +69,8 @@ fun LayerStack(
             label = "head",
         )
     } else null
+    val figure = layers.layerProgress?.takeIf { layers.known }?.let { it / 100f }
+    val figured = rememberLayerDone(figure)
 
     BoxWithConstraints(modifier) {
         val g = stackGeometry(maxHeight.value, layers, fraction)
@@ -102,15 +105,14 @@ fun LayerStack(
                 if (i == current && head != null) {
                     // with real progress the bead sits where the layer has got to and breathes;
                     // without it, it paces
-                    val within = layers.layerProgress?.takeIf { layers.known }?.let { it / 100f }
-                    val at = within ?: head.value
+                    val at = if (figure != null || liveDone != null) (liveDone ?: figured).value else head.value
                     val cx = barH + (size.width - barH * 2f) * at
                     val cy = top + barH / 2f
-                    if (within != null) {
+                    if (figure != null || liveDone != null) {
                         drawRoundRect(Ink.Ember, Offset(0f, top), Size(cx, barH), radius)
                     }
                     val glow = barH * 2.6f
-                    val strength = if (within != null) 0.25f + 0.45f * head.value else 0.55f
+                    val strength = if (figure != null || liveDone != null) 0.25f + 0.45f * head.value else 0.55f
                     drawCircle(
                         Brush.radialGradient(
                             listOf(Ink.EmberHi.copy(alpha = strength), Color.Transparent),

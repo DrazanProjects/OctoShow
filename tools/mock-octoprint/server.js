@@ -6,6 +6,9 @@
 //   GET /mock/set?scene=printing|paused|ready|done|offline|error|prompt|heating|dead&progress=0.4&tool=180&total=86000&display=Some_name.gcode
 //   GET /mock/sent     what the display has told the printer to do since the last time this was asked
 //
+// Add &realpos=1 to be a printer whose firmware reports where the nozzle really is, as REALPOS
+// lines in the terminal log, some way behind what has been sent to it, as a real one always is.
+//
 // It also plays the Tasmota smart plug the printer and the Pi are powered through
 // (GET /cm?cmnd=Power%20Off). "dead" is the Pi with its power cut: nothing answers but the plug.
 //
@@ -132,6 +135,8 @@ const S = {
   speed: 60,              // simulated seconds per real second
   plug: true,             // the smart plug's relay
   dead: false,            // the Pi is off: OctoPrint answers nothing
+  realpos: false,         // the firmware says where the nozzle really is
+  extruded: 0,            // how far the extruder has turned, by those reports
   without: new Set(),     // the optional parts this OctoPrint doesn't have
 };
 const lacks = what => S.without.has(what);
@@ -218,6 +223,47 @@ const broadcast = obj => { const s = JSON.stringify(obj); for (const ws of socke
 const plugin = (id, data) => broadcast({ plugin: { plugin: id, data } });
 const event = (type, payload) => broadcast({ event: { type, payload } });
 
+// ---------------- the nozzle's real position ----------------
+// The moves of a file that lay plastic, layer by layer, read back out of its own G-code.
+const LAID = new Map();
+function laid(name) {
+  if (LAID.has(name)) return LAID.get(name);
+  const layers = [];
+  let x = 0, y = 0, moves = null;
+  for (const line of gcodeFor(name).split('\n')) {
+    if (line.includes('DASHBOARD_LAYER_INDICATOR')) layers.push(moves = []);
+    const m = /^G1 (?:X([\d.]+) Y([\d.]+))?.*?( E[\d.]+)?$/.exec(line);
+    if (!m || m[1] === undefined) continue;
+    const nx = +m[1], ny = +m[2];
+    if (m[3] && moves) moves.push([x, y, nx, ny]);
+    x = nx; y = ny;
+  }
+  LAID.set(name, layers);
+  return layers;
+}
+// How many layers behind what has been sent the nozzle is, with moves queued in the printer.
+const NOZZLE_BEHIND = 0.6;
+const STARTED_MS = Date.now();
+function realpos(f, millis) {
+  const layers = laid(S.file.name);
+  const at = Math.max(0, f * layers.length - NOZZLE_BEHIND);
+  const n = Math.min(layers.length - 1, Math.floor(at));
+  const moves = layers[n];
+  const along = (at - n) * moves.length;
+  const i = Math.min(moves.length - 1, Math.floor(along));
+  const [x0, y0, x1, y1] = moves[i];
+  const t = along - i;
+  S.extruded += 0.5;
+  return `Recv: REALPOS ${(x0 + (x1 - x0) * t).toFixed(2)} ${(y0 + (y1 - y0) * t).toFixed(2)} ${((n + 1) * 0.2).toFixed(2)} ${S.extruded.toFixed(2)} ${millis}`;
+}
+// OctoPrint hands these over twice a second, however many have come since the last time.
+setInterval(() => {
+  if (!S.realpos || S.phase !== 'printing') return;
+  const nowMs = Date.now() - STARTED_MS;
+  const logs = [250, 0].map(ago => realpos(frac() - ago / 1000 * S.speed / S.total, nowMs - ago));
+  broadcast({ current: { ...current(false), logs } });
+}, 500);
+
 function step() {
   // temperatures drift to target
   for (const h of [S.tool, S.bed]) {
@@ -253,6 +299,7 @@ function finish() {
 }
 function scene(name, q) {
   S.scene = name; S.prompt = null; S.done = false; S.pausedAt = null; S.speed = +(q.speed ?? 1);
+  S.realpos = q.realpos === '1';
   S.without = new Set((q.without || '').split(',').filter(Boolean));
   const p = +(q.progress ?? 0.165);
   S.file = FILES[+(q.file ?? 0)] || FILES[0]; S.total = S.file.est; S.started = now() - S.total * p;

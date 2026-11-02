@@ -134,6 +134,21 @@ class ScreenshotTest {
                 tap(a, 464f, 52f)          // the part: its other side
                 settle(2500)
                 shot(a, "05f-turned-round")
+                tap(a, 464f, 52f)          // and on round to the side it started from
+                tap(a, 464f, 52f)
+                tap(a, 464f, 52f)
+
+                // Firmware that says where the nozzle really is: the display goes by that, not by
+                // what has been sent to the printer, which runs ahead of it.
+                scene("printing", "file=5&progress=0.55&realpos=1")
+                settle(6000)
+                val realLayer = vm.nozzleLayer
+                assertTrue("the display should have picked up the firmware's readings", vm.nozzleReporting && realLayer != null)
+                assertTrue("layer $realLayer should be the one the print has got to", realLayer in 54..57)
+                shot(a, "05g-following-the-nozzle")
+                scene("printing", "progress=0.3")
+                settle(3800)
+                assertNull("with the readings gone it should go back to what it was told", vm.nozzleLayer)
 
                 // a job long enough for the time left to need its widest form
                 scene("printing", "progress=0.02&total=86000")

@@ -1,6 +1,7 @@
 package com.drazan.echoshow.octoprint.ui.components
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -218,16 +219,13 @@ fun ModelPreview(
     waiting: Boolean = false,
     laying: Boolean = false,
     layerDone: Float? = null,
+    liveDone: State<Float>? = null,
 ) {
     val picture = grown?.whole ?: thumb
     val bounds = remember(picture) { picture?.let(::opaqueBounds) }
-    // The edge moves on smoothly as the figure comes in, but a new layer starts from nothing
-    // at once: gliding backwards across the part would look like the print undoing itself.
-    val down = remember { Animatable(layerDone ?: 0f) }
-    LaunchedEffect(layerDone) {
-        val target = (layerDone ?: 0f).coerceIn(0f, 1f)
-        if (target < down.value) down.snapTo(target) else down.animateTo(target, tween(900, easing = LinearEasing))
-    }
+    val figured = rememberLayerDone(layerDone)
+    // the real thing needs no smoothing: it comes in as fast as the screen can show it
+    val down = liveDone ?: figured
     // the same pace as the bead on the layer stack, so the two move as one
     val nozzle: State<Float>? = if (grown != null && laying && reveal != null) {
         rememberInfiniteTransition(label = "laying").animateFloat(
@@ -356,6 +354,66 @@ fun ModelPreview(
         }
     }
 }
+
+/**
+ * How far through its layer the print has got, 0..1, moving steadily. The figures come
+ * in bursts: the Dashboard plugin gives one every ten moves, which can be a fraction of a
+ * second on a curve and several seconds along straight lines. So each is moved towards
+ * for a little longer than the next is expected to take, see [FigurePace], which runs on
+ * until that one arrives, at the cost of being that far behind the nozzle.
+ *
+ * A new layer starts from nothing at once: gliding backwards across the part would look
+ * like the print undoing itself. A layer that is done runs out quickly, as what is drawn
+ * next starts from nothing anyway.
+ */
+@Composable
+fun rememberLayerDone(done: Float?): State<Float> {
+    val down = remember { Animatable(done ?: 0f) }
+    val pace = remember { FigurePace() }
+    LaunchedEffect(done) {
+        val target = (done ?: 0f).coerceIn(0f, 1f)
+        val expected = pace.expect((target * 100f).roundToInt(), SystemClock.elapsedRealtime())
+        when {
+            target < down.value -> down.snapTo(target)
+            target >= 1f -> down.animateTo(target, tween(GLIDE_SHORTEST_MS, easing = LinearEasing))
+            else -> down.animateTo(target, tween(glideMillis(expected), easing = LinearEasing))
+        }
+    }
+    return down.asState()
+}
+
+/**
+ * Says how long the next figure is likely to take. Ten moves can take a tenth as long in
+ * one part of a layer as in the next, so the gap just gone says little about the one to
+ * come. But one layer is mostly much like the last, so the same point of that one does.
+ */
+internal class FigurePace {
+    /** How long the print spent after each percent of the layer, the last time it was there. */
+    private val after = LongArray(101)
+    private var percent = -1
+    private var at = 0L
+
+    /** The figure [next] came in at [now]: how long, in milliseconds, until the one after it. */
+    fun expect(next: Int, now: Long): Long {
+        val since = now - at
+        val began = percent < 0
+        if (!began && next > percent) after[percent] = since
+        percent = next
+        at = now
+        for (near in intArrayOf(next, next - 1, next + 1)) if (near in 0..100 && after[near] > 0) return after[near]
+        return if (began) 0L else since
+    }
+}
+
+/** How long to take over a figure, given how long the next one is expected to take to come. */
+internal fun glideMillis(expected: Long): Int =
+    (expected * GLIDE_STRETCH).toLong().coerceIn(GLIDE_SHORTEST_MS.toLong(), GLIDE_LONGEST_MS.toLong()).toInt()
+
+/** A little over the gap between figures, so that the fill is still moving when the next one comes. */
+private const val GLIDE_STRETCH = 1.2f
+private const val GLIDE_SHORTEST_MS = 900
+/** A figure that took longer than this means the print stopped, not that the next will be as slow. */
+private const val GLIDE_LONGEST_MS = 8000
 
 /** How strongly the layer being laid shows as warm when all of it is, before the hot spot passes over it. */
 private const val WARM = 0.5f

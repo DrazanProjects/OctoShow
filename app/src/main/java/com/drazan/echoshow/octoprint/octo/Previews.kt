@@ -266,11 +266,11 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
                 if (cols !in 1..MAX_SIDE || rows !in 1..MAX_SIDE || slices !in 1..MAX_SLICES) return null
                 val height = FloatArray(cols * rows) { src.readUnsignedShort() / 100f }
                 val stack = GcodePreview.Stack(cols, rows, slices, slice)
-                val bytes = ByteArray(stack.words * rows * 8)
-                fun bits(): LongArray? {
+                val bytes = ByteArray(stack.words * rows * 4)
+                fun bits(): IntArray? {
                     if (!src.readBoolean()) return null
                     src.readFully(bytes)
-                    return LongArray(stack.words * rows).also { ByteBuffer.wrap(bytes).asLongBuffer().get(it) }
+                    return IntArray(stack.words * rows).also { ByteBuffer.wrap(bytes).asIntBuffer().get(it) }
                 }
                 for (s in 0 until slices) {
                     stack.part[s] = bits()
@@ -296,12 +296,12 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
             out.writeFloat(stack.slice)
             // hundredths of a millimetre: finer than any layer, and half the size of the floats
             for (h in shape.height) out.writeShort((h * 100f).roundToInt().coerceIn(0, 0xFFFF))
-            val bytes = ByteBuffer.allocate(stack.words * shape.rows * 8)
-            fun write(bits: LongArray?) {
+            val bytes = ByteBuffer.allocate(stack.words * shape.rows * 4)
+            fun write(bits: IntArray?) {
                 out.writeBoolean(bits != null)
                 if (bits == null) return
                 bytes.clear()
-                bytes.asLongBuffer().put(bits)
+                bytes.asIntBuffer().put(bits)
                 out.write(bytes.array())
             }
             for (s in 0 until stack.slices) {
@@ -311,6 +311,35 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
         }
         if (!part.moveOver(to)) part.delete()
     }
+
+    /**
+     * The layers [file] has an order for: their numbers, and how high each is, from the
+     * bottom up. Null when no order was kept for it. This is only the list at the front of
+     * what is kept, so it costs little to read.
+     */
+    fun layersOf(file: PrintFile): Pair<IntArray, FloatArray>? {
+        val from = routeFile(file).takeIf { it.isFile } ?: return null
+        return runCatching {
+            RandomAccessFile(from, "r").use { src ->
+                if (src.readInt() != ROUTE_FORMAT) return null
+                src.seek(ROUTE_HEADER_BYTES.toLong())
+                val count = src.readInt()
+                if (count !in 1..MAX_LAYERS) return null
+                val index = ByteBuffer.wrap(ByteArray(count * ROUTE_ENTRY_BYTES).also { src.readFully(it) })
+                val numbers = IntArray(count)
+                val heights = FloatArray(count)
+                for (i in 0 until count) {
+                    numbers[i] = index.getInt(i * ROUTE_ENTRY_BYTES)
+                    heights[i] = index.getFloat(i * ROUTE_ENTRY_BYTES + 4)
+                }
+                numbers to heights
+            }
+        }.getOrNull()
+    }
+
+    /** Layer [number]'s map from a spot on the bed to when it is laid. Null as for [layingOf]. */
+    fun mapOf(file: PrintFile, number: Int): LayerMap? =
+        layingOf(file, number)?.let { route -> runCatching { LayerMap(route, route.layers.single()) }.getOrNull() }
 
     /**
      * Layer [number] of the order [file] is laid in, with the map it is drawn on. Null
@@ -496,8 +525,10 @@ class Previews(private val api: OctoApi, private val dir: File, private val scra
 
     private companion object {
         /** Raised when what is stored changes, or a drawing already stored would look wrong: each is made again when next printed. */
-        const val SHAPE_FORMAT = 3
+        const val SHAPE_FORMAT = 4
         const val ROUTE_FORMAT = 1
+        /** What comes before a route's count of layers: its format, origin, cell, columns and rows. */
+        const val ROUTE_HEADER_BYTES = 4 + 4 + 4 + 4 + 4 + 4
         /** What a route's list of layers says of each: number, height, where its squares sit, how many bytes they pack to. */
         const val ROUTE_ENTRY_BYTES = 4 + 4 + 4 * 2 + 4
         /** More than any part has; a list claiming more is a damaged file. */

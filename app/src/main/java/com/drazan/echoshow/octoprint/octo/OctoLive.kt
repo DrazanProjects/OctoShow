@@ -51,6 +51,10 @@ class OctoLive(private val api: OctoApi) {
     val temps = MutableStateFlow<List<TempSample>>(emptyList())
     val prompt = MutableStateFlow<Prompt?>(null)
     val events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 32)
+    /** Where the nozzle really is, when the printer's firmware says. See [NozzleFix]. */
+    val fixes = MutableSharedFlow<NozzleFix>(extraBufferCapacity = 64)
+    /** Readings have come over this socket, so updates are worth having as often as they can be. */
+    private var reporting = false
 
     suspend fun run() {
         while (true) {
@@ -87,6 +91,8 @@ class OctoLive(private val api: OctoApi) {
         var current = session
         var socket: WebSocket? = null
         var gotData = false
+        var quick = false
+        reporting = false
 
         // If OctoPrint accepts the socket but never sends state, start over.
         val watchdog = launch {
@@ -101,10 +107,10 @@ class OctoLive(private val api: OctoApi) {
                     val msg = runCatching { JSONObject(frame.text) }.getOrNull() ?: return@collect
                     when {
                         msg.has("connected") -> {
-                            // No terminal log, and only the plugins we read: keeps each update small.
+                            // Next to nothing of the terminal log, and only the plugins we read: keeps each update small.
                             socket?.send(SUBSCRIBE)
                             // 500 ms base interval x2: one update a second is plenty for a wall display.
-                            socket?.send(JSONObject().put("throttle", 2).toString())
+                            socket?.send(throttle(2))
                             socket?.authenticate(current)
                         }
                         msg.has("reauthRequired") -> {
@@ -118,8 +124,16 @@ class OctoLive(private val api: OctoApi) {
                         }
                         msg.has("current") -> {
                             gotData = true
-                            msg.obj("current")?.let { applyState(it, replaceTemps = false) }
+                            msg.obj("current")?.let {
+                                applyState(it, replaceTemps = false)
+                                applyLog(it)
+                            }
                             link.value = Link.Online
+                            // ...unless the nozzle can be followed, which wants every reading promptly
+                            if (reporting && !quick) {
+                                quick = true
+                                socket?.send(throttle(1))
+                            }
                         }
                         msg.has("event") -> msg.obj("event")?.let(::applyEvent)
                         msg.has("plugin") -> msg.obj("plugin")?.let(::applyPlugin)
@@ -130,6 +144,8 @@ class OctoLive(private val api: OctoApi) {
         watchdog.cancel()
         throw IOException("Socket closed")
     }
+
+    private fun throttle(factor: Int): String = JSONObject().put("throttle", factor).toString()
 
     private fun WebSocket.authenticate(s: Session) {
         send(JSONObject().put("auth", "${s.name}:${s.session}").toString())
@@ -206,6 +222,16 @@ class OctoLive(private val api: OctoApi) {
         )
     }
 
+    /** The lines of the terminal log asked for in [SUBSCRIBE], in the order they came. */
+    private fun applyLog(d: JSONObject) {
+        val lines = d.optJSONArray("logs") ?: return
+        for (i in 0 until lines.length()) {
+            val fix = parseNozzleFix(lines.optString(i)) ?: continue
+            reporting = true
+            fixes.tryEmit(fix)
+        }
+    }
+
     private fun applyEvent(e: JSONObject) {
         val p = e.obj("payload")
         fun ended(kind: Outcome.Kind) = LiveEvent.PrintEnded(
@@ -267,7 +293,8 @@ class OctoLive(private val api: OctoApi) {
             .put(
                 "subscribe",
                 JSONObject()
-                    .put("state", JSONObject().put("logs", false).put("messages", false))
+                    // OctoPrint takes text here as a pattern, and sends only the log lines it fits
+                    .put("state", JSONObject().put("logs", NOZZLE_MARK).put("messages", false))
                     .put("events", true)
                     .put("plugins", JSONArray(listOf("dashboard", "LightControls", "action_command_prompt"))),
             )

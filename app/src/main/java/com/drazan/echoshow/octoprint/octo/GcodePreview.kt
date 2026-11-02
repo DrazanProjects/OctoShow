@@ -97,18 +97,21 @@ object GcodePreview {
      * brims. A slice with none of it has no array at all.
      */
     class Stack(val cols: Int, val rows: Int, val slices: Int, val slice: Float) {
-        /** How many longs one row of bits takes. */
-        val words = (cols + 63) / 64
-        val part = arrayOfNulls<LongArray>(slices)
-        val extra = arrayOfNulls<LongArray>(slices)
+        /** How many ints one row of bits takes. Ints because the display is 32-bit, where longs are slow and awkward. */
+        val words = (cols + 31) / 32
+        val part = arrayOfNulls<IntArray>(slices)
+        val extra = arrayOfNulls<IntArray>(slices)
 
         /** Which slice height [z] is in. A height right on the line between two belongs to the lower. */
         fun of(z: Float): Int = (z / slice - 0.001f).toInt()
 
         fun solid(gx: Int, gy: Int, s: Int): Boolean {
             if (gx < 0 || gy < 0 || gx >= cols || gy >= rows || s < 0 || s >= slices) return false
-            val at = gy * words + (gx ushr 6)
-            return (part[s]?.let { it[at] ushr gx and 1L != 0L } ?: false) || (extra[s]?.let { it[at] ushr gx and 1L != 0L } ?: false)
+            val at = gy * words + (gx ushr 5)
+            val inPart = part[s]
+            if (inPart != null && inPart[at] ushr gx and 1 != 0) return true
+            val inExtra = extra[s]
+            return inExtra != null && inExtra[at] ushr gx and 1 != 0
         }
 
         /**
@@ -116,8 +119,8 @@ object GcodePreview {
          * grid. Grow every slice by a square, then shrink it back: gaps close, edges stay put.
          */
         fun closeGaps() {
-            val grown = LongArray(words * rows)
-            val across = LongArray(words * rows)
+            val grown = IntArray(words * rows)
+            val across = IntArray(words * rows)
             for (bits in part) {
                 if (bits == null) continue
                 spread(bits, across, grown, wider = true)
@@ -126,13 +129,13 @@ object GcodePreview {
         }
 
         /** Each square of [to] is the squares of [from] around it, any of them if [wider] and otherwise all. */
-        private fun spread(from: LongArray, across: LongArray, to: LongArray, wider: Boolean) {
+        private fun spread(from: IntArray, across: IntArray, to: IntArray, wider: Boolean) {
             for (y in 0 until rows) {
                 val row = y * words
                 for (w in 0 until words) {
                     val v = from[row + w]
-                    val left = (v shl 1) or (if (w > 0) from[row + w - 1] ushr 63 else 0L)
-                    val right = (v ushr 1) or (if (w < words - 1) from[row + w + 1] shl 63 else 0L)
+                    val left = (v shl 1) or (if (w > 0) from[row + w - 1] ushr 31 else 0)
+                    val right = (v ushr 1) or (if (w < words - 1) from[row + w + 1] shl 31 else 0)
                     across[row + w] = if (wider) v or left or right else v and left and right
                 }
             }
@@ -168,22 +171,13 @@ object GcodePreview {
             fun of(shape: Shape, turn: Int): View {
                 val stack = shape.stack
                 // where the model itself stands, at any height: supports and brims don't say which way it lies
-                val foot = LongArray(stack.words * stack.rows)
+                val foot = IntArray(stack.words * stack.rows)
                 for (bits in stack.part) if (bits != null) for (i in foot.indices) foot[i] = foot[i] or bits[i]
 
-                var n = 0
-                var sumX = 0.0; var sumY = 0.0; var sumXX = 0.0; var sumYY = 0.0; var sumXY = 0.0
-                forEachSquare(shape, foot) { x, y ->
-                    n++
-                    sumX += x; sumY += y; sumXX += x * x; sumYY += y * y; sumXY += x * y
-                }
-                val spreadX = if (n > 0) sumXX / n - sumX / n * (sumX / n) else 0.0
-                val spreadY = if (n > 0) sumYY / n - sumY / n * (sumY / n) else 0.0
-                val spreadXY = if (n > 0) sumXY / n - sumX / n * (sumY / n) else 0.0
-                val lie = 0.5 * atan2(2 * spreadXY, spreadX - spreadY)
-                val half = hypot((spreadX - spreadY) / 2, spreadXY)
-                val mean = (spreadX + spreadY) / 2
-                val isLong = mean + half >= LONG_PART * LONG_PART * max(mean - half, 1e-6)
+                val lying = Lying()
+                forEachSquare(shape, foot, lying::add)
+                val lie = lying.direction()
+                val isLong = lying.isLong()
 
                 val azimuth = turn * PI / 2 + if (!isLong) AZIMUTH else {
                     // along its length with a little of its end showing, from whichever side is nearest the usual view
@@ -194,18 +188,8 @@ object GcodePreview {
                 }
 
                 // how big it is: along its own length if it has one, otherwise along the bed
-                val alongX = if (isLong) cos(lie) else 1.0
-                val alongY = if (isLong) sin(lie) else 0.0
-                var minA = Double.MAX_VALUE; var maxA = -Double.MAX_VALUE
-                var minB = Double.MAX_VALUE; var maxB = -Double.MAX_VALUE
-                forEachSquare(shape, foot) { x, y ->
-                    val a = x * alongX + y * alongY
-                    val b = y * alongX - x * alongY
-                    if (a < minA) minA = a
-                    if (a > maxA) maxA = a
-                    if (b < minB) minB = b
-                    if (b > maxB) maxB = b
-                }
+                val size = Reach(if (isLong) cos(lie) else 1.0, if (isLong) sin(lie) else 0.0)
+                forEachSquare(shape, foot, size::add)
 
                 // the picture's right and up, as in render
                 val sinA = sin(azimuth).toFloat(); val cosA = cos(azimuth).toFloat()
@@ -229,20 +213,72 @@ object GcodePreview {
                 return View(
                     azimuth, (minR + maxR) / 2, (minU + maxU) / 2, maxR - minR + edge, maxU - minU + edge,
                     // a file labelled as nothing but supports has no model to measure
-                    if (n > 0) (maxA - minA).toFloat() + shape.cell else 0f,
-                    if (n > 0) (maxB - minB).toFloat() + shape.cell else 0f,
+                    if (lying.squares > 0) size.along() + shape.cell else 0f,
+                    if (lying.squares > 0) size.across() + shape.cell else 0f,
                     shape.top,
                 )
             }
 
             /** Every square of bed set in [bits], as its middle in millimetres. */
-            private inline fun forEachSquare(shape: Shape, bits: LongArray, each: (Double, Double) -> Unit) {
+            private inline fun forEachSquare(shape: Shape, bits: IntArray, each: (Double, Double) -> Unit) {
                 val words = shape.stack.words
                 for (gy in 0 until shape.rows) for (gx in 0 until shape.cols) {
-                    if (bits[gy * words + (gx ushr 6)] ushr gx and 1L == 0L) continue
+                    if (bits[gy * words + (gx ushr 5)] ushr gx and 1 == 0) continue
                     each((shape.originX + (gx + 0.5f) * shape.cell).toDouble(), (shape.originY + (gy + 0.5f) * shape.cell).toDouble())
                 }
             }
+        }
+
+        /** Which way a model's squares lie on the bed, from how they are spread about their middle. */
+        private class Lying {
+            var squares = 0
+            private var sumX = 0.0
+            private var sumY = 0.0
+            private var sumXX = 0.0
+            private var sumYY = 0.0
+            private var sumXY = 0.0
+
+            fun add(x: Double, y: Double) {
+                squares++
+                sumX += x
+                sumY += y
+                sumXX += x * x
+                sumYY += y * y
+                sumXY += x * y
+            }
+
+            private fun spreadX() = if (squares > 0) sumXX / squares - sumX / squares * (sumX / squares) else 0.0
+            private fun spreadY() = if (squares > 0) sumYY / squares - sumY / squares * (sumY / squares) else 0.0
+            private fun spreadXY() = if (squares > 0) sumXY / squares - sumX / squares * (sumY / squares) else 0.0
+
+            /** The angle of its length on the bed. */
+            fun direction(): Double = 0.5 * atan2(2 * spreadXY(), spreadX() - spreadY())
+
+            fun isLong(): Boolean {
+                val half = hypot((spreadX() - spreadY()) / 2, spreadXY())
+                val mean = (spreadX() + spreadY()) / 2
+                return mean + half >= LONG_PART * LONG_PART * max(mean - half, 1e-6)
+            }
+        }
+
+        /** How far a model's squares reach, along a direction and across it. */
+        private class Reach(private val alongX: Double, private val alongY: Double) {
+            private var minA = Double.MAX_VALUE
+            private var maxA = -Double.MAX_VALUE
+            private var minB = Double.MAX_VALUE
+            private var maxB = -Double.MAX_VALUE
+
+            fun add(x: Double, y: Double) {
+                val a = x * alongX + y * alongY
+                val b = y * alongX - x * alongY
+                if (a < minA) minA = a
+                if (a > maxA) maxA = a
+                if (b < minB) minB = b
+                if (b > maxB) maxB = b
+            }
+
+            fun along() = (maxA - minA).toFloat()
+            fun across() = (maxB - minB).toFloat()
         }
     }
 
@@ -740,7 +776,7 @@ object GcodePreview {
             val highest = stack.of(z).coerceIn(0, stack.slices - 1)
             val lowest = stack.of(max(z - thickness, 0f) + stack.slice * 0.01f).coerceIn(0, highest)
             val slices = if (extra) stack.extra else stack.part
-            for (s in lowest..highest) if (slices[s] == null) slices[s] = LongArray(stack.words * rows)
+            for (s in lowest..highest) if (slices[s] == null) slices[s] = IntArray(stack.words * rows)
             val reachesTo = (highest + 1) * stack.slice
             val gx0 = (x0 - originX) / cell
             val gy0 = (y0 - originY) / cell
@@ -765,8 +801,8 @@ object GcodePreview {
                         val dx = xx + 0.5f - cx
                         if (dx * dx + dy * dy > reach2) continue
                         if (height[row + xx] < reachesTo) height[row + xx] = reachesTo
-                        val at = yy * stack.words + (xx ushr 6)
-                        for (slice in lowest..highest) slices[slice]!![at] = slices[slice]!![at] or (1L shl xx)
+                        val at = yy * stack.words + (xx ushr 5)
+                        for (slice in lowest..highest) slices[slice]!![at] = slices[slice]!![at] or (1 shl xx)
                     }
                 }
             }
@@ -788,7 +824,7 @@ object GcodePreview {
          */
         private fun heightsUpTo(last: Int) {
             val words = stack.words
-            val seen = LongArray(words * rows)
+            val seen = IntArray(words * rows)
             height.fill(0f)
             for (s in last downTo 0) {
                 val part = stack.part[s]
@@ -796,13 +832,13 @@ object GcodePreview {
                 if (part == null && extra == null) continue
                 val top = (s + 1) * stack.slice
                 for (i in seen.indices) {
-                    var found = ((part?.get(i) ?: 0L) or (extra?.get(i) ?: 0L)) and seen[i].inv()
-                    if (found == 0L) continue
+                    var found = ((part?.get(i) ?: 0) or (extra?.get(i) ?: 0)) and seen[i].inv()
+                    if (found == 0) continue
                     seen[i] = seen[i] or found
                     val row = i / words * cols
-                    val first = i % words * 64
-                    while (found != 0L) {
-                        val x = first + java.lang.Long.numberOfTrailingZeros(found)
+                    val first = i % words * 32
+                    while (found != 0) {
+                        val x = first + Integer.numberOfTrailingZeros(found)
                         if (x < cols) height[row + x] = top
                         found = found and (found - 1)
                     }
@@ -1039,6 +1075,33 @@ object GcodePreview {
 
     /* ---------------- looking at it ---------------- */
 
+    /** Draws the picture, a pixel at a time. See [Eye] for how each one is worked out. */
+    private fun render(
+        bed: HeightMap, view: View, width: Int, height: Int, keepGoing: () -> Boolean, route: Route? = null, layer: Route.Layer? = null,
+    ): Picture? {
+        val eye = Eye(bed, view, width, height, route, layer)
+        val light = ByteArray(width * height)
+        val alpha = ByteArray(width * height)
+        val fresh = ByteArray(width * height)
+        val shadow = ByteArray(width * height)
+        val reached = if (eye.order != null) ByteArray(width * height) else null
+        for (py in 0 until height) {
+            if (py and 15 == 0 && !keepGoing()) return null
+            for (px in 0 until width) {
+                eye.look(px, py)
+                val i = py * width + px
+                if (eye.hits > 0) {
+                    light[i] = (eye.sum / eye.hits * 255f).toInt().coerceIn(0, 255).toByte()
+                    alpha[i] = (eye.hits * 255 / (SUPERSAMPLE * SUPERSAMPLE)).toByte()
+                    fresh[i] = (eye.laying * 255 / eye.hits).toByte()
+                    reached?.set(i, eye.earliest.toByte())
+                }
+                shadow[i] = (eye.dark / (SUPERSAMPLE * SUPERSAMPLE) * GROUND_SHADE * 255f).toInt().coerceIn(0, 255).toByte()
+            }
+        }
+        return Picture(width, height, light, alpha, fresh, shadow, reached, eye.trail())
+    }
+
     /**
      * Looks at the part from in front and above, from the side [view] says, with no
      * perspective. For every pixel a line of sight is followed down through the space
@@ -1049,298 +1112,353 @@ object GcodePreview {
      *
      * Given the [layer] of a [route] that is being laid, the picture also says
      * when the nozzle gets to each bit of it.
+     *
+     * This is many small methods, and works in floats and ints, on purpose. The Echo Show
+     * is 32-bit, and Android 11's compiler aborts, taking the app with it, when a method
+     * has more on its stack than one of its instructions can reach. One long method doing
+     * all of this was enough to set that off once a build was optimised.
      */
-    private fun render(
-        bed: HeightMap, view: View, width: Int, height: Int, keepGoing: () -> Boolean, route: Route? = null, layer: Route.Layer? = null,
-    ): Picture? {
-        val sinA = sin(view.azimuth); val cosA = cos(view.azimuth)
-        val sinE = sin(ELEVATION).toFloat(); val cosE = cos(ELEVATION).toFloat()
+    private class Eye(
+        private val bed: HeightMap, private val view: View, width: Int, height: Int,
+        private val route: Route?, private val layer: Route.Layer?,
+    ) {
+        private val sinA = sin(view.azimuth).toFloat()
+        private val cosA = cos(view.azimuth).toFloat()
+        private val sinE = sin(ELEVATION).toFloat()
+        private val cosE = cos(ELEVATION).toFloat()
+
         // the direction of sight, and the picture's own right and up, in bed coordinates
-        val dx = (sinA * cosE).toFloat(); val dy = (cosA * cosE).toFloat(); val dz = -sinE
-        val rx = cosA.toFloat(); val ry = (-sinA).toFloat()
-        val ux = (sinA * sinE).toFloat(); val uy = (cosA * sinE).toFloat(); val uz = cosE
+        private val dx = sinA * cosE
+        private val dy = cosA * cosE
+        private val dz = -sinE
+        private val rx = cosA
+        private val ry = -sinA
+        private val ux = sinA * sinE
+        private val uy = cosA * sinE
+        private val uz = cosE
 
         // light from over the viewer's left shoulder
-        val lightScale = 1f / sqrt(LIGHT_LEFT * LIGHT_LEFT + LIGHT_UP * LIGHT_UP + LIGHT_NEAR * LIGHT_NEAR)
-        val lx = (-LIGHT_LEFT * rx + LIGHT_UP * ux - LIGHT_NEAR * dx) * lightScale
-        val ly = (-LIGHT_LEFT * ry + LIGHT_UP * uy - LIGHT_NEAR * dy) * lightScale
-        val lz = (LIGHT_UP * uz - LIGHT_NEAR * dz) * lightScale
+        private val lightScale = 1f / sqrt(LIGHT_LEFT * LIGHT_LEFT + LIGHT_UP * LIGHT_UP + LIGHT_NEAR * LIGHT_NEAR)
+        private val lx = (-LIGHT_LEFT * rx + LIGHT_UP * ux - LIGHT_NEAR * dx) * lightScale
+        private val ly = (-LIGHT_LEFT * ry + LIGHT_UP * uy - LIGHT_NEAR * dy) * lightScale
+        private val lz = (LIGHT_UP * uz - LIGHT_NEAR * dz) * lightScale
+
         // the way to the lamp along the bed, and how much it rises for each millimetre of that
-        val lampway = max(hypot(lx, ly), 0.01f)
-        val lampX = lx / lampway
-        val lampY = ly / lampway
-        val lampRise = lz / lampway
-        val shadowStep = max(SHADOW_REACH_MM / SHADOW_STEPS, bed.cell * 1.5f)
+        private val lampway = max(hypot(lx, ly), 0.01f)
+        private val lampX = lx / lampway
+        private val lampY = ly / lampway
+        private val lampRise = lz / lampway
+        private val shadowStep = max(SHADOW_REACH_MM / SHADOW_STEPS, bed.cell * 1.5f)
         // how far up the light climbs from one step to the next, in slices, halved: a floor it crosses between steps still counts
-        val shadowSlices = (shadowStep * lampRise / bed.stack.slice / 2).toInt()
+        private val shadowSlices = (shadowStep * lampRise / bed.stack.slice / 2).toInt()
 
-        val mapWidth = bed.cols * bed.cell
-        val mapDepth = bed.rows * bed.cell
-        val sub = SUPERSAMPLE
-        val mmPerSample = max(view.wide / width, view.tall / height) / (1f - 2 * PICTURE_MARGIN) / sub
+        private val mapWidth = bed.cols * bed.cell
+        private val mapDepth = bed.rows * bed.cell
+        private val samplesWide = width * SUPERSAMPLE
+        private val samplesTall = height * SUPERSAMPLE
+        private val mmPerSample = max(view.wide / width, view.tall / height) / (1f - 2 * PICTURE_MARGIN) / SUPERSAMPLE
         // the point the middle of the picture looks through
-        val cx = view.right * rx + view.up * ux
-        val cy = view.right * ry + view.up * uy
-        val cz = view.up * uz
+        private val cx = view.right * rx + view.up * ux
+        private val cy = view.right * ry + view.up * uy
+        private val cz = view.up * uz
 
-        val stack = bed.stack
-        val partSlices = stack.part
-        val extraSlices = stack.extra
-        val words = stack.words
-        val cols = bed.cols
-        val rows = bed.rows
-        val cell = bed.cell
-        val tops = bed.height
-        val thick = stack.slice
-        val reachCells = max((WALL_REACH_MM / cell).toInt(), 2)
-        val coverSlices = (COVERED_MM / thick).toInt()
-
-        val light = ByteArray(width * height)
-        val alpha = ByteArray(width * height)
-        val fresh = ByteArray(width * height)
-        val shadow = ByteArray(width * height)
-        val order = if (route != null) layer?.unpacked() else null
-        val reached = if (order != null) ByteArray(width * height) else null
+        private val stack = bed.stack
+        private val partSlices = stack.part
+        private val extraSlices = stack.extra
+        private val words = stack.words
+        private val cols = bed.cols
+        private val rows = bed.rows
+        private val cell = bed.cell
+        private val tops = bed.height
+        private val thick = stack.slice
+        private val last = bed.last
+        private val reachCells = max((WALL_REACH_MM / cell).toInt(), 2)
+        private val coverSlices = (COVERED_MM / thick).toInt()
         // nothing stands higher than where printing has got to
-        val ceiling = (bed.last + 1) * thick
-        val samplesWide = width * sub
-        val samplesTall = height * sub
+        private val ceiling = (last + 1) * thick
 
-        for (py in 0 until height) {
-            if (py and 15 == 0 && !keepGoing()) return null
-            for (px in 0 until width) {
-                var hits = 0
-                var laying = 0
-                var earliest = 0
-                var sum = 0f
-                var dark = 0f
-                for (sy in 0 until sub) for (sx in 0 until sub) {
-                    val s = (px * sub + sx + 0.5f - samplesWide / 2f) * mmPerSample
-                    val t = (samplesTall / 2f - (py * sub + sy + 0.5f)) * mmPerSample
-                    val qx = cx + s * rx + t * ux
-                    val qy = cy + s * ry + t * uy
-                    val qz = cz + t * uz
-                    // the stretch of this line of sight that lies between the top of the part and the bed
-                    var from = (qz - ceiling) / sinE
-                    var to = qz / sinE
-                    val atBed = to
-                    // ...and over the map at all
-                    if (dx != 0f) {
-                        val a = (bed.originX - qx) / dx
-                        val b = (bed.originX + mapWidth - qx) / dx
-                        from = max(from, min(a, b)); to = min(to, max(a, b))
-                    }
-                    if (dy != 0f) {
-                        val a = (bed.originY - qy) / dy
-                        val b = (bed.originY + mapDepth - qy) / dy
-                        from = max(from, min(a, b)); to = min(to, max(a, b))
-                    }
+        /** When each square of the layer being laid is reached, and where the nozzle is at each moment. */
+        val order = if (route != null) layer?.unpacked() else null
 
-                    var found = false
-                    var meetsAt = 0f
-                    var side = false
-                    var sliceHit = 0
-                    var isExtra = false
-                    var foundX = 0
-                    var foundY = 0
-                    // where this line of sight first went under plastic, and how closely, 0..1
-                    var underFrom = -1f
-                    var covered = false
-                    var closeness = 0f
+        // what one pixel comes to, from [look]
+        var hits = 0
+        var laying = 0
+        var earliest = 0
+        var sum = 0f
+        var dark = 0f
 
-                    if (from < to) {
-                        var tau = from
-                        val startX = (qx + tau * dx - bed.originX) / cell
-                        val startY = (qy + tau * dy - bed.originY) / cell
-                        var gx = startX.toInt().coerceIn(0, cols - 1)
-                        var gy = startY.toInt().coerceIn(0, rows - 1)
-                        val stepX = if (dx > 0f) 1 else -1
-                        val stepY = if (dy > 0f) 1 else -1
-                        val eachX = if (dx != 0f) cell / abs(dx) else Float.MAX_VALUE
-                        val eachY = if (dy != 0f) cell / abs(dy) else Float.MAX_VALUE
-                        var nextX = if (dx != 0f) from + ((if (dx > 0f) gx + 1 else gx) - startX) * cell / dx else Float.MAX_VALUE
-                        var nextY = if (dy != 0f) from + ((if (dy > 0f) gy + 1 else gy) - startY) * cell / dy else Float.MAX_VALUE
+        // what one line of sight met, from [follow]
+        private var found = false
+        private var meetsAt = 0f
+        private var side = false
+        private var sliceHit = 0
+        private var isExtra = false
+        private var foundX = 0
+        private var foundY = 0
+        // where it first went under plastic, if it has, and how closely, 0..1
+        private var covered = false
+        private var underFrom = -1f
+        private var closeness = 0f
 
-                        walk@ while (tau < to) {
-                            val leaves = min(min(nextX, nextY), to)
-                            val top = tops[gy * cols + gx]
-                            if (top > 0f) {
-                                val zIn = qz + tau * dz
-                                val zOut = qz + leaves * dz
-                                if (zOut < top) {
-                                    // the slice it came into this square at; the very first square is always from above
-                                    val cameIn = if (tau == from) Int.MAX_VALUE else stack.of(zIn)
-                                    var slice = min(stack.of(min(zIn, top)), bed.last)
-                                    val lowest = max(stack.of(zOut), 0)
-                                    val at = gy * words + (gx ushr 6)
-                                    while (slice >= lowest) {
-                                        val part = partSlices[slice]
-                                        val inPart = part != null && part[at] ushr gx and 1L != 0L
-                                        val extra = !inPart && extraSlices[slice].let { it != null && it[at] ushr gx and 1L != 0L }
-                                        if (inPart || extra) {
-                                            found = true
-                                            side = slice >= cameIn
-                                            meetsAt = if (side) tau else (qz - (slice + 1) * thick) / sinE
-                                            sliceHit = slice
-                                            isExtra = extra
-                                            foundX = gx
-                                            foundY = gy
-                                            break@walk
-                                        }
-                                        slice--
-                                    }
-                                    // Through this square and out, below what stands in it. Only plastic close
-                                    // overhead shuts a surface in: a wall with a gear 15 mm above it is in the open.
-                                    if (!covered) {
-                                        val above = stack.of(min(zIn, top)) + 1
-                                        val highest = min(above + coverSlices, bed.last)
-                                        var over = above
-                                        while (over <= highest) {
-                                            if (stack.solid(gx, gy, over)) {
-                                                covered = true
-                                                underFrom = tau
-                                                closeness = 1f - (over - above).toFloat() / (coverSlices + 1)
-                                                break
-                                            }
-                                            over++
-                                        }
-                                    }
-                                }
-                            }
-                            if (nextX < nextY) {
-                                tau = nextX
-                                nextX += eachX
-                                gx += stepX
-                                if (gx < 0 || gx >= cols) break
-                            } else {
-                                tau = nextY
-                                nextY += eachY
-                                gy += stepY
-                                if (gy < 0 || gy >= rows) break
-                            }
-                        }
-                    }
+        // which way what it met faces, from [face]
+        private var nx = 0f
+        private var ny = 0f
+        private var nz = 0f
 
-                    if (!found) {
-                        // the bed, which is dark where the part stands between it and the lamp
-                        val gx = floor((qx + atBed * dx + lampX * GROUND_OFFSET_MM - bed.originX) / cell).toInt()
-                        val gy = floor((qy + atBed * dy + lampY * GROUND_OFFSET_MM - bed.originY) / cell).toInt()
-                        dark += bed.at(bed.ground, gx, gy)
-                        continue
-                    }
-
-                    val hx = qx + meetsAt * dx
-                    val hy = qy + meetsAt * dy
-                    val hz = qz + meetsAt * dz
-                    val gx = foundX
-                    val gy = foundY
-                    val surface = bed.at(tops, gx, gy)
-
-                    // which way the surface faces here, from how the height changes around it
-                    val slopeX = (bed.at(bed.smooth, gx + 1, gy) - bed.at(bed.smooth, gx - 1, gy)) / (2 * cell)
-                    val slopeY = (bed.at(bed.smooth, gx, gy + 1) - bed.at(bed.smooth, gx, gy - 1)) / (2 * cell)
-                    // A sheer wall is simply a very steep slope, so one rule covers flat tops,
-                    // ramps and walls alike, and a sloped surface made of layer steps shades smoothly.
-                    val below = surface - hz > WALL_MM
-                    var nx = -slopeX
-                    var ny = -slopeY
-                    var nz = 1f
-                    // That is only so of a wall that goes all the way up to the top of its square. The
-                    // height of one with air above it belongs to whatever overhangs it, which says nothing
-                    // of which way the wall faces: there the plastic of the slice itself does.
-                    var onItsOwn = false
-                    if (below && side) {
-                        val high = stack.of(surface)
-                        onItsOwn = abs(nx) + abs(ny) < 0.5f ||
-                            !stack.solid(gx, gy, (3 * sliceHit + high) / 4) ||
-                            !stack.solid(gx, gy, (sliceHit + high) / 2) ||
-                            !stack.solid(gx, gy, (sliceHit + 3 * high) / 4)
-                    }
-                    if (below && !side) {
-                        nx = 0f; ny = 0f
-                    } else if (onItsOwn) {
-                        var awayX = 0f
-                        var awayY = 0f
-                        for (k in 0 until AROUND) {
-                            val ox = AROUND_X[k]
-                            val oy = AROUND_Y[k]
-                            if (!stack.solid(gx + ox * reachCells, gy + oy * reachCells, sliceHit)) { awayX += ox; awayY += oy }
-                            if (!stack.solid(gx + ox * reachCells / 2, gy + oy * reachCells / 2, sliceHit)) { awayX += ox; awayY += oy }
-                        }
-                        if (awayX != 0f || awayY != 0f) { nx = awayX; ny = awayY; nz = 0.05f * hypot(awayX, awayY) }
-                        else { nx = -dx * 4f; ny = -dy * 4f }
-                    }
-                    val len = sqrt(nx * nx + ny * ny + nz * nz)
-                    nx /= len; ny /= len; nz /= len
-
-                    // is anything between this and the lamp?
-                    var lit = true
-                    var k = 1
-                    while (k <= SHADOW_STEPS) {
-                        val along = k * shadowStep
-                        val ox = ((hx + lampX * along - bed.originX) / cell).toInt()
-                        val oy = ((hy + lampY * along - bed.originY) / cell).toInt()
-                        if (ox < 0 || oy < 0 || ox >= cols || oy >= rows) break
-                        // the light goes under what is too high up to be in its way
-                        val lightAt = hz + 0.05f + along * lampRise
-                        if (tops[oy * cols + ox] > lightAt) {
-                            val at = stack.of(lightAt)
-                            if (stack.solid(ox, oy, at) || stack.solid(ox, oy, at - shadowSlices)) { lit = false; break }
-                        }
-                        k++
-                    }
-
-                    val facing = max(0f, nx * lx + ny * ly + nz * lz)
-                    var bright = AMBIENT + (1f - AMBIENT) * facing * (if (lit) 1f else SHADOWED)
-                    if (!below) bright *= 1f - HOLLOW_SHADE * bed.at(bed.hollow, gx, gy)
-                    // walls get a touch darker towards the bed, which grounds the part
-                    else if (side) bright *= 0.86f + 0.14f * (hz / bed.top).coerceIn(0f, 1f)
-                    // and what is only seen from underneath something darker still
-                    if (covered) bright *= 1f - COVERED_SHADE * closeness * ((meetsAt - underFrom) / COVERED_MM).coerceIn(0f, 1f)
-                    if (isExtra) bright *= EXTRA_LIGHT
-
-                    hits++
-                    if (bed.cut && !side && sliceHit == bed.last) {
-                        laying++
-                        if (order != null) {
-                            val col = ((hx - route!!.originX) / route.cell).toInt() - layer!!.left
-                            val row = ((hy - route.originY) / route.cell).toInt() - layer.top
-                            if (col >= 0 && row >= 0 && col < layer.width && row < layer.height) {
-                                val moment = order[row * layer.width + col].toInt() and 0xFF
-                                if (moment != 0 && (earliest == 0 || moment < earliest)) earliest = moment
-                            }
-                        }
-                    }
-                    sum += bright
-                }
-                val i = py * width + px
-                if (hits > 0) {
-                    light[i] = (sum / hits * 255f).toInt().coerceIn(0, 255).toByte()
-                    alpha[i] = (hits * 255 / (sub * sub)).toByte()
-                    fresh[i] = (laying * 255 / hits).toByte()
-                    reached?.set(i, earliest.toByte())
-                }
-                shadow[i] = (dark / (sub * sub) * GROUND_SHADE * 255f).toInt().coerceIn(0, 255).toByte()
+        /** Works out the pixel at ([px], [py]), from several lines of sight through it. */
+        fun look(px: Int, py: Int) {
+            hits = 0
+            laying = 0
+            earliest = 0
+            sum = 0f
+            dark = 0f
+            val sub = SUPERSAMPLE
+            for (sy in 0 until sub) for (sx in 0 until sub) {
+                val s = (px * sub + sx + 0.5f - samplesWide / 2f) * mmPerSample
+                val t = (samplesTall / 2f - (py * sub + sy + 0.5f)) * mmPerSample
+                val qx = cx + s * rx + t * ux
+                val qy = cy + s * ry + t * uy
+                val qz = cz + t * uz
+                follow(qx, qy, qz)
+                if (found) see(qx, qy, qz) else dark += groundAt(qx, qy, qz)
             }
         }
 
-        // The nozzle's place at each moment is a point on the layer's own surface. Sight
-        // lines are parallel, so where it shows is that point measured along the picture's
-        // right and up.
-        var trail: FloatArray? = null
-        if (order != null && route != null && layer != null) {
+        /** Follows the line of sight through (qx, qy, qz) down to the first plastic it meets. */
+        private fun follow(qx: Float, qy: Float, qz: Float) {
+            found = false
+            covered = false
+            // the stretch of this line of sight that lies between the top of the part and the bed
+            var from = (qz - ceiling) / sinE
+            var to = qz / sinE
+            // ...and over the map at all
+            if (dx != 0f) {
+                val a = (bed.originX - qx) / dx
+                val b = (bed.originX + mapWidth - qx) / dx
+                from = max(from, min(a, b)); to = min(to, max(a, b))
+            }
+            if (dy != 0f) {
+                val a = (bed.originY - qy) / dy
+                val b = (bed.originY + mapDepth - qy) / dy
+                from = max(from, min(a, b)); to = min(to, max(a, b))
+            }
+            if (from >= to) return
+
+            var tau = from
+            val startX = (qx + tau * dx - bed.originX) / cell
+            val startY = (qy + tau * dy - bed.originY) / cell
+            var gx = startX.toInt().coerceIn(0, cols - 1)
+            var gy = startY.toInt().coerceIn(0, rows - 1)
+            val stepX = if (dx > 0f) 1 else -1
+            val stepY = if (dy > 0f) 1 else -1
+            val eachX = if (dx != 0f) cell / abs(dx) else Float.MAX_VALUE
+            val eachY = if (dy != 0f) cell / abs(dy) else Float.MAX_VALUE
+            var nextX = if (dx != 0f) from + ((if (dx > 0f) gx + 1 else gx) - startX) * cell / dx else Float.MAX_VALUE
+            var nextY = if (dy != 0f) from + ((if (dy > 0f) gy + 1 else gy) - startY) * cell / dy else Float.MAX_VALUE
+
+            while (tau < to) {
+                if (inSquare(gx, gy, tau, min(min(nextX, nextY), to), tau == from, qz)) return
+                if (nextX < nextY) {
+                    tau = nextX
+                    nextX += eachX
+                    gx += stepX
+                    if (gx < 0 || gx >= cols) return
+                } else {
+                    tau = nextY
+                    nextY += eachY
+                    gy += stepY
+                    if (gy < 0 || gy >= rows) return
+                }
+            }
+        }
+
+        /** Looks for plastic where the line of sight crosses one square, from [tau] to [leaves]. */
+        private fun inSquare(gx: Int, gy: Int, tau: Float, leaves: Float, first: Boolean, qz: Float): Boolean {
+            val top = tops[gy * cols + gx]
+            if (top <= 0f) return false
+            val zIn = qz + tau * dz
+            val zOut = qz + leaves * dz
+            if (zOut >= top) return false
+            // the slice it came into this square at; the very first square is always from above
+            val cameIn = if (first) Int.MAX_VALUE else stack.of(zIn)
+            var slice = min(stack.of(min(zIn, top)), last)
+            val lowest = max(stack.of(zOut), 0)
+            val at = gy * words + (gx ushr 5)
+            while (slice >= lowest) {
+                val part = partSlices[slice]
+                val inPart = part != null && part[at] ushr gx and 1 != 0
+                val extra = !inPart && extraSlices[slice].let { it != null && it[at] ushr gx and 1 != 0 }
+                if (inPart || extra) {
+                    found = true
+                    side = slice >= cameIn
+                    meetsAt = if (side) tau else (qz - (slice + 1) * thick) / sinE
+                    sliceHit = slice
+                    isExtra = extra
+                    foundX = gx
+                    foundY = gy
+                    return true
+                }
+                slice--
+            }
+            // Through this square and out, below what stands in it. Only plastic close
+            // overhead shuts a surface in: a wall with a gear 15 mm above it is in the open.
+            if (!covered) lookOverhead(gx, gy, min(zIn, top), tau)
+            return false
+        }
+
+        private fun lookOverhead(gx: Int, gy: Int, z: Float, tau: Float) {
+            val above = stack.of(z) + 1
+            val highest = min(above + coverSlices, last)
+            var over = above
+            while (over <= highest) {
+                if (stack.solid(gx, gy, over)) {
+                    covered = true
+                    underFrom = tau
+                    closeness = 1f - (over - above).toFloat() / (coverSlices + 1)
+                    return
+                }
+                over++
+            }
+        }
+
+        /** The bed, which is dark where the part stands between it and the lamp. */
+        private fun groundAt(qx: Float, qy: Float, qz: Float): Float {
+            val atBed = qz / sinE
+            val gx = floor((qx + atBed * dx + lampX * GROUND_OFFSET_MM - bed.originX) / cell).toInt()
+            val gy = floor((qy + atBed * dy + lampY * GROUND_OFFSET_MM - bed.originY) / cell).toInt()
+            return bed.at(bed.ground, gx, gy)
+        }
+
+        /** Adds what the line of sight through (qx, qy, qz) met to the pixel. */
+        private fun see(qx: Float, qy: Float, qz: Float) {
+            val hx = qx + meetsAt * dx
+            val hy = qy + meetsAt * dy
+            val hz = qz + meetsAt * dz
+            sum += brightness(hx, hy, hz)
+            hits++
+            if (bed.cut && !side && sliceHit == last) {
+                laying++
+                if (order != null) noteWhen(hx, hy)
+            }
+        }
+
+        /** Keeps the earliest moment any of the pixel's lines of sight says the nozzle gets there. */
+        private fun noteWhen(hx: Float, hy: Float) {
+            val col = ((hx - route!!.originX) / route.cell).toInt() - layer!!.left
+            val row = ((hy - route.originY) / route.cell).toInt() - layer.top
+            if (col < 0 || row < 0 || col >= layer.width || row >= layer.height) return
+            val moment = order!![row * layer.width + col].toInt() and 0xFF
+            if (moment != 0 && (earliest == 0 || moment < earliest)) earliest = moment
+        }
+
+        private fun brightness(hx: Float, hy: Float, hz: Float): Float {
+            val surface = bed.at(tops, foundX, foundY)
+            val below = surface - hz > WALL_MM
+            face(surface, below)
+            val facing = max(0f, nx * lx + ny * ly + nz * lz)
+            var bright = AMBIENT + (1f - AMBIENT) * facing * (if (lit(hx, hy, hz)) 1f else SHADOWED)
+            if (!below) bright *= 1f - HOLLOW_SHADE * bed.at(bed.hollow, foundX, foundY)
+            // walls get a touch darker towards the bed, which grounds the part
+            else if (side) bright *= 0.86f + 0.14f * (hz / bed.top).coerceIn(0f, 1f)
+            // and what is only seen from underneath something darker still
+            if (covered) bright *= 1f - COVERED_SHADE * closeness * ((meetsAt - underFrom) / COVERED_MM).coerceIn(0f, 1f)
+            if (isExtra) bright *= EXTRA_LIGHT
+            return bright
+        }
+
+        /** Works out which way the surface faces here, from how the height changes around it. */
+        private fun face(surface: Float, below: Boolean) {
+            val gx = foundX
+            val gy = foundY
+            // A sheer wall is simply a very steep slope, so one rule covers flat tops,
+            // ramps and walls alike, and a sloped surface made of layer steps shades smoothly.
+            nx = -(bed.at(bed.smooth, gx + 1, gy) - bed.at(bed.smooth, gx - 1, gy)) / (2 * cell)
+            ny = -(bed.at(bed.smooth, gx, gy + 1) - bed.at(bed.smooth, gx, gy - 1)) / (2 * cell)
+            nz = 1f
+            if (below && !side) {
+                nx = 0f
+                ny = 0f
+            } else if (below && wallStandsAlone(surface)) {
+                faceOfSlice()
+            }
+            val len = sqrt(nx * nx + ny * ny + nz * nz)
+            nx /= len
+            ny /= len
+            nz /= len
+        }
+
+        /**
+         * That is only so of a wall that goes all the way up to the top of its square. The
+         * height of one with air above it belongs to whatever overhangs it, which says nothing
+         * of which way the wall faces.
+         */
+        private fun wallStandsAlone(surface: Float): Boolean {
+            if (abs(nx) + abs(ny) < 0.5f) return true
+            val high = stack.of(surface)
+            return !stack.solid(foundX, foundY, (3 * sliceHit + high) / 4) ||
+                !stack.solid(foundX, foundY, (sliceHit + high) / 2) ||
+                !stack.solid(foundX, foundY, (sliceHit + 3 * high) / 4)
+        }
+
+        /** Which way a wall faces going by the plastic of its own slice: away from it. */
+        private fun faceOfSlice() {
+            var awayX = 0f
+            var awayY = 0f
+            for (k in 0 until AROUND) {
+                val ox = AROUND_X[k]
+                val oy = AROUND_Y[k]
+                if (!stack.solid(foundX + ox * reachCells, foundY + oy * reachCells, sliceHit)) { awayX += ox; awayY += oy }
+                if (!stack.solid(foundX + ox * reachCells / 2, foundY + oy * reachCells / 2, sliceHit)) { awayX += ox; awayY += oy }
+            }
+            if (awayX != 0f || awayY != 0f) {
+                nx = awayX
+                ny = awayY
+                nz = 0.05f * hypot(awayX, awayY)
+            } else {
+                nx = -dx * 4f
+                ny = -dy * 4f
+            }
+        }
+
+        /** Whether nothing stands between this spot and the lamp. */
+        private fun lit(hx: Float, hy: Float, hz: Float): Boolean {
+            var k = 1
+            while (k <= SHADOW_STEPS) {
+                val along = k * shadowStep
+                val ox = ((hx + lampX * along - bed.originX) / cell).toInt()
+                val oy = ((hy + lampY * along - bed.originY) / cell).toInt()
+                if (ox < 0 || oy < 0 || ox >= cols || oy >= rows) return true
+                // the light goes under what is too high up to be in its way
+                val lightAt = hz + 0.05f + along * lampRise
+                if (tops[oy * cols + ox] > lightAt) {
+                    val at = stack.of(lightAt)
+                    if (stack.solid(ox, oy, at) || stack.solid(ox, oy, at - shadowSlices)) return false
+                }
+                k++
+            }
+            return true
+        }
+
+        /**
+         * The nozzle's place at each moment is a point on the layer's own surface. Sight
+         * lines are parallel, so where it shows is that point measured along the picture's
+         * right and up.
+         */
+        fun trail(): FloatArray? {
+            val steps = order ?: return null
+            val route = route ?: return null
+            val layer = layer ?: return null
             val wide = mmPerSample * samplesWide
             val tall = mmPerSample * samplesTall
             val squares = layer.width * layer.height
-            trail = FloatArray(2 * MOMENTS) { i ->
+            return FloatArray(2 * MOMENTS) { i ->
                 val m = i / 2
-                val bx = route.originX + (layer.left + (order[squares + 2 * m].toInt() and 0xFF) / 255f * layer.width) * route.cell
-                val by = route.originY + (layer.top + (order[squares + 2 * m + 1].toInt() and 0xFF) / 255f * layer.height) * route.cell
+                val bx = route.originX + (layer.left + (steps[squares + 2 * m].toInt() and 0xFF) / 255f * layer.width) * route.cell
+                val by = route.originY + (layer.top + (steps[squares + 2 * m + 1].toInt() and 0xFF) / 255f * layer.height) * route.cell
                 if (i % 2 == 0) 0.5f + (bx * rx + by * ry - view.right) / wide
                 else 0.5f - (bx * ux + by * uy + ceiling * uz - view.up) / tall
             }
         }
-        return Picture(width, height, light, alpha, fresh, shadow, reached, trail)
     }
 
     /** The eight directions around a square, as steps along the bed. */
