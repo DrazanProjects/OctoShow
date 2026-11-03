@@ -1,6 +1,7 @@
 package com.drazan.echoshow.octoprint.octo
 
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * One reading of where the nozzle really is, taken from the printer's motors, in
@@ -50,10 +51,21 @@ class NozzleTrack {
         private set
     var y = 0f
         private set
+    /** While [laying], the lower of the two readings' heights: see [sample]. */
     var z = 0f
         private set
     /** Plastic is going down: the extruder moved on between the two readings around this moment. */
     var laying = false
+        private set
+    /**
+     * The readings either side of this moment, and how far it is from the first to the second,
+     * 0..1. The nozzle was at both, but it needn't have gone straight from one to the other.
+     */
+    var before: NozzleFix? = null
+        private set
+    var after: NozzleFix? = null
+        private set
+    var along = 0f
         private set
 
     fun add(fix: NozzleFix, arrivedAt: Long) {
@@ -70,6 +82,8 @@ class NozzleTrack {
         offset = Long.MAX_VALUE
         lastArrival = -1L
         laying = false
+        before = null
+        after = null
     }
 
     /** Whether readings are coming in at all. */
@@ -82,18 +96,25 @@ class NozzleTrack {
         while (fixes.size > 2 && fixes[1].millis <= wanted) fixes.removeFirst()
         val a = fixes.first()
         if (fixes.size < 2 || wanted <= a.millis) {
-            moveTo(a.x, a.y, a.z, false)
+            moveTo(a, a, 0f, a.z, false)
             return true
         }
         val b = fixes[1]
         val t = if (b.millis > a.millis) ((wanted - a.millis).toFloat() / (b.millis - a.millis)).coerceIn(0f, 1f) else 1f
-        moveTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, b.e > a.e)
+        // Plastic went down between the two readings, and it went down at the lower one's
+        // height. When they differ the nozzle hopped clear of the layer between them, and the
+        // extruder pushing back what it drew in before the hop doesn't lay anything up there.
+        val extruding = b.e > a.e
+        moveTo(a, b, t, if (extruding) minOf(a.z, b.z) else a.z + (b.z - a.z) * t, extruding)
         return true
     }
 
-    private fun moveTo(atX: Float, atY: Float, atZ: Float, extruding: Boolean) {
-        x = atX
-        y = atY
+    private fun moveTo(from: NozzleFix, to: NozzleFix, t: Float, atZ: Float, extruding: Boolean) {
+        before = from
+        after = to
+        along = t
+        x = from.x + (to.x - from.x) * t
+        y = from.y + (to.y - from.y) * t
         z = atZ
         laying = extruding
     }
@@ -175,21 +196,32 @@ class NozzleFollower {
         done = 0f
     }
 
-    /** Catches up with [now]. False when there are no readings to go on. */
-    fun look(now: Long): Boolean {
+    /**
+     * Catches up with [now]. [sent] is the last layer sent to the printer, as the Dashboard
+     * plugin reports it, or null before the first. False when there are no readings to go on.
+     */
+    fun look(now: Long, sent: Int?): Boolean {
         if (!track.sample(now)) return false
         if (track.laying && numbers.isNotEmpty()) {
-            findLayer(track.z)
-            findMoment(track.x, track.y)
+            findLayer(track.z, sent)
+            findMoment()
         }
         return true
     }
 
-    /** The layer at height [z], and it only ever goes up: the first as high as the nozzle is. */
-    private fun findLayer(z: Float) {
+    /**
+     * The layer at height [z], and it only ever goes up: the first as high as the nozzle is.
+     * Never one the printer hasn't been sent yet, though. The purge line before the first
+     * layer is laid a little higher than it, and in the odd moment the readings either side
+     * of a hop can still look like plastic going down above the layer.
+     */
+    private fun findLayer(z: Float, sent: Int?) {
+        if (sent == null) return
         var i = 0
         while (i < heights.size - 1 && heights[i] < z - SAME_LAYER_MM) i++
+        while (i > 0 && numbers[i] > sent) i--
         val found = numbers[i]
+        if (found > sent) return
         if (layer.let { it == null || found > it }) {
             layer = found
             height = heights[i]
@@ -200,8 +232,27 @@ class NozzleFollower {
         }
     }
 
-    private fun findMoment(x: Float, y: Float) {
-        val at = map?.momentAt(x, y) ?: return
+    /**
+     * How far through the layer the nozzle has got: when the map has it at the readings either
+     * side of this moment, and in between those by the time. Not the map at a point on the
+     * straight line between them, which on a turn round an outline lies inside it, where the
+     * infill goes later.
+     */
+    private fun findMoment() {
+        val map = map ?: return
+        val from = track.before ?: return
+        val to = track.after ?: return
+        // the higher of two readings is in the air, hopped up for a travel to or from there
+        val first = if (from.z > to.z + SAME_LAYER_MM) 0 else map.momentAt(from.x, from.y)
+        val second = if (to.z > from.z + SAME_LAYER_MM) 0 else map.momentAt(to.x, to.y)
+        val at = when {
+            first == 0 -> second
+            // Off the part by then, or over plastic laid earlier, or further on than a quarter
+            // of a second's printing gets: a travel straight after printing ends somewhere laid
+            // later, and going a little way towards that every frame would never look like a jump.
+            second <= first || second - first > MOST_AT_ONCE -> first
+            else -> first + ((second - first) * track.along).roundToInt()
+        }
         if (at <= moment) return
         // Near enough to where it was, it is simply carrying on, and the first plastic seen on a
         // layer says where it is, however far through this display came in. Much further on than

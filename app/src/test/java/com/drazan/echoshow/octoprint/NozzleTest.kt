@@ -117,14 +117,20 @@ class NozzleTest {
         useLayers(route.layers.map { it.number }.toIntArray(), route.layers.map { it.z }.toFloatArray())
     }
 
-    /** Feeds [f] the nozzle laying plastic at one spot and looks, given the map of the layer it is on. */
-    private fun NozzleFollower.at(x: Float, y: Float, z: Float, clock: LongArray) {
+    /** Every layer has been sent to the printer. */
+    private val allSent = Int.MAX_VALUE
+
+    /**
+     * Feeds the nozzle laying plastic at one spot and looks, given the map of the layer it is on
+     * and [sent] as the last layer sent to the printer.
+     */
+    private fun NozzleFollower.at(x: Float, y: Float, z: Float, clock: LongArray, sent: Int? = allSent) {
         val t = clock[0]
         add(NozzleFix(x, y, z, t / 10f, t), arrivedAt = t + 200L)
         add(NozzleFix(x, y, z, (t + 250) / 10f, t + 250), arrivedAt = t + 450L)
-        look(t + 1_100L)
+        look(t + 1_100L, sent)
         layer?.let { n -> useMap(LayerMap(route, route.layers.first { it.number == n })) }
-        look(t + 1_101L)
+        look(t + 1_101L, sent)
         clock[0] = t + 500L
     }
 
@@ -157,7 +163,7 @@ class NozzleTest {
         val t = clock[0]
         nozzle.add(NozzleFix(110f, 118f, 0.8f, 1f, t), arrivedAt = t)
         nozzle.add(NozzleFix(110f, 118f, 0.8f, 1f, t + 250), arrivedAt = t + 250)
-        nozzle.look(t + 1_100L)
+        nozzle.look(t + 1_100L, allSent)
         assertEquals(before, nozzle.done, 0.0001f)
     }
 
@@ -169,8 +175,42 @@ class NozzleTest {
         val t = clock[0]
         nozzle.add(NozzleFix(110f, 104f, 1.2f, 1f, t), arrivedAt = t)
         nozzle.add(NozzleFix(110f, 104f, 1.2f, 1f, t + 250), arrivedAt = t + 250)
-        nozzle.look(t + 1_100L)
+        nozzle.look(t + 1_100L, allSent)
         assertEquals(4, nozzle.layer)
+    }
+
+    @Test
+    fun theExtruderPushingBackAfterAHopIsNotANewLayer() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        nozzle.at(110f, 104f, 0.8f, clock)
+        // up 0.4 for a travel with the filament drawn in, then back down and pushed out again
+        val t = clock[0]
+        nozzle.add(NozzleFix(112f, 106f, 1.2f, 1f, t), arrivedAt = t)
+        nozzle.add(NozzleFix(114f, 108f, 0.8f, 1.8f, t + 250), arrivedAt = t + 250)
+        nozzle.look(t + 1_100L, allSent)
+        assertEquals("the plastic went down at the lower reading's height", 4, nozzle.layer)
+    }
+
+    @Test
+    fun itIsNeverOnALayerNotSentYet() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        nozzle.at(110f, 104f, 1.0f, clock, sent = 4)
+        assertEquals(4, nozzle.layer)
+        nozzle.at(110f, 104f, 1.0f, clock, sent = 5)
+        assertEquals(5, nozzle.layer)
+    }
+
+    @Test
+    fun thePurgeBeforeTheFirstLayerIsNoLayer() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        // a purge line a shade higher than the first layer, before the first layer's mark goes out
+        nozzle.at(110f, 104f, 0.28f, clock, sent = null)
+        assertNull(nozzle.layer)
+        nozzle.at(110f, 101f, 0.2f, clock, sent = 1)
+        assertEquals(1, nozzle.layer)
     }
 
     @Test
@@ -182,6 +222,37 @@ class NozzleTest {
         nozzle.at(110f, 101f, 1.0f, clock)
         assertEquals(5, nozzle.layer)
         assertTrue("near the start of layer 5, not ${nozzle.done}", nozzle.done < 0.2f)
+    }
+
+    @Test
+    fun aHopIntoANewLayerOverWhatItLaysLastStartsItFromWhereItLands() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        nozzle.at(110f, 116f, 0.8f, clock)
+        // up and over the back of the part, where layer 5 finishes, then down at its front and pushed out
+        val t = clock[0]
+        nozzle.add(NozzleFix(110f, 118f, 1.4f, 1f, t), arrivedAt = t)
+        nozzle.add(NozzleFix(110.5f, 101f, 1.0f, 1.8f, t + 250), arrivedAt = t + 250)
+        nozzle.look(t + 1_100L, allSent)
+        assertEquals(5, nozzle.layer)
+        nozzle.useMap(LayerMap(route, route.layers.first { it.number == 5 }))
+        nozzle.look(t + 1_101L, allSent)
+        assertTrue("near the start of layer 5, not ${nozzle.done}", nozzle.done < 0.2f)
+    }
+
+    @Test
+    fun aTravelStraightAfterPrintingDoesNotCreepAhead() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        nozzle.at(110f, 104f, 0.8f, clock)
+        val before = nozzle.done
+        // printed a little, then across to the back of the part before the next reading
+        val t = clock[0]
+        nozzle.add(NozzleFix(110f, 104.4f, 0.8f, 1f, t), arrivedAt = t)
+        nozzle.add(NozzleFix(110f, 118f, 0.8f, 1.2f, t + 250), arrivedAt = t + 250)
+        // frame by frame through the quarter second between the two, where each step on is small
+        for (frame in 0..16) nozzle.look(t + 700L + frame * 16L, allSent)
+        assertTrue("still about where it printed: $before then ${nozzle.done}", nozzle.done < before + 0.05f)
     }
 
     @Test
@@ -208,7 +279,7 @@ class NozzleTest {
         val nozzle = NozzleFollower()
         nozzle.add(NozzleFix(110f, 104f, 0.8f, 1f, 1_000L), arrivedAt = 1_000L)
         nozzle.add(NozzleFix(110f, 104f, 0.8f, 2f, 1_250L), arrivedAt = 1_250L)
-        assertTrue(nozzle.look(2_000L))
+        assertTrue(nozzle.look(2_000L, allSent))
         assertNull(nozzle.layer)
     }
 }

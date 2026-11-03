@@ -766,7 +766,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
      * for every frame while readings are coming in.
      */
     fun followNozzle(now: Long) {
-        val live = nozzle.look(now)
+        val live = nozzle.look(now, sent = layers.current?.takeIf { it > 0 })
         if (!live) {
             nozzleReporting = false
             nozzleLayer = null
