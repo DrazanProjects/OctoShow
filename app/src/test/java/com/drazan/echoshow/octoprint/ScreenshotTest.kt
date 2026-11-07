@@ -1,470 +1,92 @@
 package com.drazan.echoshow.octoprint
 
-import android.app.Activity
-import android.os.Looper
-import android.os.SystemClock
-import android.view.InputDevice
-import android.view.MotionEvent
-import androidx.lifecycle.ViewModelProvider
-import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.drazan.echoshow.octoprint.data.Prefs
-import com.drazan.echoshow.octoprint.octo.JogSpeed
-import com.drazan.echoshow.octoprint.power.PowerStep
-import androidx.compose.ui.graphics.toArgb
-import com.drazan.echoshow.octoprint.ui.theme.Accents
-import com.drazan.echoshow.octoprint.ui.theme.Grounds
-import com.drazan.echoshow.octoprint.ui.theme.Inks
+import com.drazan.echoshow.octoprint.octo.Link
+import com.drazan.echoshow.octoprint.octo.Phase
 import com.github.takahirom.roborazzi.captureRoboImage
-import kotlinx.coroutines.runBlocking
-import org.json.JSONArray
-import org.json.JSONObject
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import org.robolectric.shadows.ShadowChoreographer
-import org.robolectric.shadows.ShadowSystemClock
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.time.Duration
 
 /**
- * Renders every screen of the app at the Echo Show 5's size, without a device.
- *
- * This runs the real activity, view model and network code on the JVM against
- * the mock OctoPrint in tools/mock-octoprint, steps the mock through a print,
- * and writes PNGs to app/build/outputs/screens.
- *
- *   node tools/mock-octoprint/server.js      (in another terminal)
- *   gradlew :app:testDebugUnitTest --tests "*ScreenshotTest*"
- *
- * Skipped when the mock isn't running, so a plain `gradlew test` stays green.
+ * The first of the walks through the app's screens: setting the display up, then a print
+ * in progress, on the camera and as the part, drawn while it prints. The others are the
+ * Screenshot*Test classes beside this one; see [ScreenWalk].
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 // The Echo Show 5 as it really reports itself: 960 x 480 pixels at 195 dpi, i.e. 788 x 394 dp.
 @Config(sdk = [34], qualifiers = "w788dp-h394dp-land-195dpi")
-class ScreenshotTest {
-
-    private val mock = "http://127.0.0.1:5000"
-    private val out = File("build/outputs/screens").apply { mkdirs() }
+class ScreenshotTest : ScreenWalk(5000) {
 
     @Test
-    fun everyScreen() {
-        assumeTrue("mock OctoPrint not running at $mock", scene("printing"))
-
+    fun settingUpAndThePart() = walk(
+        "printing", connect = false,
         // A smart plug is already set up and is off as the display starts. Starting the
         // display is what brings the printer up, so it should be switched on unasked.
-        runBlocking { Prefs(ApplicationProvider.getApplicationContext()).setPlug("http://127.0.0.1:5000/") }
-        get("$mock/cm?cmnd=Power%20Off")
-        assertFalse(plugIsOn())
-
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            lateinit var a: MainActivity
-            scenario.onActivity { a = it }
-            assertEquals("the test should see the screen the way the device reports it", 195, a.resources.displayMetrics.densityDpi)
-            // Give Robolectric a display refresh to pace frames by. Without it an endless
-            // animation (the bead on the layer stack) runs frames back to back and never yields.
-            ShadowChoreographer.setPaused(true)
-            ShadowChoreographer.setFrameDelay(Duration.ofMillis(16))
-            run {
-                val vm = ViewModelProvider(a)[PrinterViewModel::class.java]
-
-                // first run
-                settle(1500)
-                shot(a, "01-setup")
-                assertTrue("a plug found off as the display starts should be switched on", plugIsOn())
-                // No scheme given and the port only speaks https with a self-signed certificate:
-                // the same situation as a real OctoPi that has plain http switched off.
-                vm.requestAccess("127.0.0.1:5443")
-                settle(2500)
-                shot(a, "02-setup-waiting")
-                settle(7000)   // the mock approves after six seconds
-
-                // a print in progress; the picture starts as the file's preview
-                settle(6000)
-                tap(a, 110f, 52f)          // picture: the camera instead
-                settle(3000)
-                shot(a, "03-printing-camera")
-                hold(a, 866f, 432f, 800)   // halfway through holding Cancel
-                // One picture, not shot()'s two with a wait between: the wait would see the hold
-                // through to the end, and the print this walk goes on to photograph would be cancelled.
-                a.window.decorView.captureRoboImage(File(out, "03b-holding-cancel.png").path)
-                release(a, 866f, 432f)
-                settle(600)
-                tap(a, 164f, 52f)          // picture: back to the preview
-                settle(2500)
-                shot(a, "04-printing-model")
-
-                scene("printing", "file=2&progress=0.58")
-                settle(3500)
-                shot(a, "05-printing-tall-part")
-
-                // a file the slicer put no preview in: the display fetches its G-code and draws one
-                scene("printing", "file=5&progress=0.55")
-                settle(6000)
-                shot(a, "05b-printing-drawn-preview")
-
-                // A job of a file with the slicer's picture, never drawn here, started while the camera
-                // is up: the display draws it all the same, so the part grows the moment anyone looks.
-                tap(a, 110f, 52f)          // picture: the camera
-                settle(1500)
-                scene("printing", "file=3&progress=0.3")
-                settle(6000)
-                val stand = vm.jobFile
-                assertTrue(
-                    "the job's drawing should be made while the camera is up",
-                    stand != null && stand.thumbnail != null && vm.thumbs!!.drawn.hasShape(stand),
-                )
-                tap(a, 164f, 52f)          // picture: the preview
-                // the moment after: the part's ghost while its growth is worked out, and no line across it
-                settle(200)
-                a.window.decorView.captureRoboImage(File(out, "05d-switching-to-model.png").path)
-                settle(2500)
-                shot(a, "05e-drawn-while-camera-was-up")
-                tap(a, 464f, 52f)          // the part: its other side
-                settle(2500)
-                shot(a, "05f-turned-round")
-                tap(a, 464f, 52f)          // and on round to the side it started from
-                tap(a, 464f, 52f)
-                tap(a, 464f, 52f)
-
-                // Firmware that says where the nozzle really is: the display goes by that, not by
-                // what has been sent to the printer, which runs ahead of it.
-                scene("printing", "file=5&progress=0.55&realpos=1")
-                settle(6000)
-                val realLayer = vm.nozzleLayer
-                assertTrue("the display should have picked up the firmware's readings", vm.nozzleReporting && realLayer != null)
-                assertTrue("layer $realLayer should be the one the print has got to", realLayer in 54..57)
-                shot(a, "05g-following-the-nozzle")
-                scene("printing", "progress=0.3")
-                settle(3800)
-                assertNull("with the readings gone it should go back to what it was told", vm.nozzleLayer)
-
-                // Printed from the printer's SD card and known only by the card's short name: OctoPrint
-                // can't read the file, so the part and its layers come from its own copy, and what the
-                // Dashboard plugin says is left from an earlier job. Well into a layer, so the picture
-                // shows it filling.
-                scene("printing", "file=5&progress=0.762&realpos=1&sd=1&sdname=CALIBR~1.GCO")
-                // The copy is drawn afresh, as the mock dates its files anew each time it lists them,
-                // then its layers and the map of the one being laid are read, and only then can the
-                // picture of that layer, filled as far as the nozzle has got, be made.
-                val cube = "calibration_cube_PLA_22m.gcode"
-                settleUntil(15_000) {
-                    vm.jobDrawing?.let { vm.thumbs!!.drawn.hasShape(it) } == true && vm.jobDrawing?.name == cube &&
-                        vm.nozzleLayer in 74..77 && vm.nozzleLayers == 100 && vm.nozzleDone.value > 0f
-                }
-                settle(2000)
-                assertEquals("OctoPrint's own copy stands in", cube, vm.jobDrawing?.name)
-                val cardLayer = vm.nozzleLayer
-                assertTrue("layer $cardLayer should be the one the print has got to, not the Dashboard's 3", cardLayer in 74..77)
-                assertEquals("the copy's layers, not the Dashboard's 33", 100, vm.nozzleLayers)
-                shot(a, "05h-printing-from-the-sd-card")
-
-                // A job long enough for the time left to need its widest form. A new job on a real
-                // printer forgets the last one's nozzle, and the mock starts none: wait for those
-                // readings to go out of date instead.
-                scene("printing", "progress=0.02&total=86000")
-                settleUntil(8000) { vm.nozzleLayer == null }
-                settle(3500)
-                shot(a, "05c-printing-long-job")
-
-                scene("heating")
-                settle(3500)
-                shot(a, "06-heating-up")
-
-                scene("paused", "progress=0.41")
-                settle(3000)
-                shot(a, "07-paused")
-
-                scene("prompt", "progress=0.41")
-                settle(3000)
-                shot(a, "08-printer-asks")
-                tap(a, 350f, 300f)         // answer it
-                settle(1500)
-
-                scene("done")
-                settle(3000)
-                shot(a, "09-finished")
-                tap(a, 712f, 432f)         // Bed is clear
-                settle(800)
-
-                scene("ready")
-                settle(5000)               // includes fetching the file list
-                shot(a, "10-ready")
-
-                scene("offline")
-                settle(3000)
-                shot(a, "11-printer-offline")
-
-                scene("error")
-                settle(3000)
-                shot(a, "12-printer-error")
-
-                // files
-                scene("ready")
-                settle(2500)
-                tap(a, 38f, 104f)
-                settle(5000)
-                shot(a, "13-files")
-                tap(a, 700f, 430f)         // Print
-                settle(1500)
-                shot(a, "14-start-print")
-                tap(a, 760f, 310f)         // Not now
-                settle(800)
-
-                // controls, idle and mid-print
-                tap(a, 38f, 164f)
-                settle(2000)
-                shot(a, "15-controls")
-                // three quick taps on nozzle-up should reach OctoPrint as one target, then a jog right
-                repeat(3) { tap(a, 342f, 83f) }
-                settle(1500)
-                tap(a, 552f, 144f)
-                settle(800)
-                shot(a, "15b-controls-heating")
-                assertEquals(3000, sent().last { it.getString("command") == "jog" }.getInt("speed"))
-                // X and Y go at the speed chosen, Z at a slower one of its own
-                tap(a, 560f, 305f)         // Fast
-                settle(600)
-                assertEquals(JogSpeed.FAST, vm.display.value.jogSpeed)
-                tap(a, 552f, 144f)         // right
-                settle(500)
-                tap(a, 614f, 84f)          // up
-                settle(800)
-                assertEquals(listOf(9000, 300), sent().map { it.getInt("speed") })
-                // a hot nozzle brings out the filament choices
-                scene("ready", "tool=215")
-                settle(1500)
-                tap(a, 790f, 185f)         // 2 mm/s
-                settle(600)
-                tap(a, 875f, 83f)          // Extrude
-                settle(800)
-                assertEquals(120, sent().single { it.getString("command") == "extrude" }.getInt("speed"))
-                shot(a, "15c-controls-hot")
-                // both are kept, so back to what the shots further down expect
-                vm.setJogSpeed(JogSpeed.NORMAL)
-                vm.setExtrudeSpeed(300)
-                settle(600)
-                scene("printing", "progress=0.3")
-                settle(3000)
-                shot(a, "16-controls-while-printing")
-
-                // settings
-                tap(a, 38f, 436f)
-                settle(1500)
-                shot(a, "17-settings")
-                tap(a, 150f, 311f)         // turn the screen off: the list of times
-                settle(800)
-                shot(a, "17a-screen-off-times")
-                tap(a, 150f, 122f)         // 2 minutes
-                settle(800)
-                assertEquals(2, vm.display.value.offAfterMin)
-                shot(a, "17c-screen-off-chosen")
-                // back to what the screen going off further down counts on
-                vm.setOffAfter(5)
-                settle(600)
-                tap(a, 750f, 269f)         // power plug
-                settle(800)
-                shot(a, "17b-power-plug")
-                tap(a, 880f, 40f)          // away from the sheet closes it
-                settle(600)
-
-                // camera on the whole screen
-                tap(a, 38f, 44f)
-                settle(1500)
-                tap(a, 110f, 52f)          // picture: back to camera
-                settle(3000)
-                tap(a, 300f, 180f)         // open it full screen
-                settle(3000)
-                shot(a, "18-camera-full")
-
-                // left alone, the screen goes off
-                ShadowSystemClock.advanceBy(Duration.ofMinutes(5))
-                settle(7000)
-                shot(a, "19-screen-off")
-                assertTrue("the backlight should be turned down", a.window.attributes.screenBrightness in 0f..0.1f)
-                // the touch that brings it back lands where Pause is, and must not press it
-                tap(a, 712f, 432f)
-                settle(3000)
-                shot(a, "20-touched-awake")
-                assertTrue("the backlight should be handed back", a.window.attributes.screenBrightness < 0f)
-
-                // other colors, on the screens that show the most of them
-                tap(a, 164f, 52f)          // picture: the preview
-                settle(1500)
-                val looks = listOf(
-                    Triple("Black", "Bone", "Teal"), Triple("Navy", "White", "Amber"),
-                    Triple("Charcoal", "Lemon", "Pink"), Triple("Forest", "Bone", "Lime"),
-                )
-                for ((ground, ink, accent) in looks) {
-                    vm.setGround(Grounds.first { it.label == ground }.color.toArgb())
-                    vm.setInk(Inks.first { it.label == ink }.color.toArgb())
-                    vm.setAccent(Accents.first { it.label == accent }.color.toArgb())
-                    val name = "colors-${ground.lowercase()}-${ink.lowercase()}-${accent.lowercase()}"
-                    settle(1200)
-                    shot(a, "$name-1-status")
-                    tap(a, 38f, 104f)
-                    settle(2500)
-                    shot(a, "$name-2-files")
-                    tap(a, 38f, 164f)
-                    settle(1500)
-                    shot(a, "$name-3-controls")
-                    tap(a, 38f, 436f)
-                    settle(1200)
-                    tap(a, 180f, 112f)     // colors
-                    settle(800)
-                    shot(a, "$name-4-choosing")
-                    tap(a, 880f, 40f)      // away from the sheet closes it
-                    settle(600)
-                    tap(a, 38f, 44f)
-                    settle(1200)
-                }
-                vm.setGround(Grounds[0].color.toArgb())
-                vm.setInk(Inks[0].color.toArgb())
-                vm.setAccent(Accents[0].color.toArgb())
-                settle(1200)
-
-                // asked to switch off when the job is done: nothing happens until it is
-                tap(a, 926f, 34f)          // power, which under a job asks about the end of it
-                settle(800)
-                shot(a, "20a-when-done-question")
-                tap(a, 350f, 308f)         // Switch off when done
-                settle(800)
-                shot(a, "20b-off-when-done")
-                assertTrue(vm.offWhenDone)
-                assertNull(vm.power)
-                scene("done", "tool=180")
-                settle(4000)
-                shot(a, "20c-done-so-switching-off")
-                // it says so first and waits; the routine itself is the one photographed further down
-                assertTrue("a finished job should lead to switching off unasked", vm.power is PowerStep.AfterPrint)
-                assertFalse(vm.offWhenDone)
-                tap(a, 480f, 296f)         // Leave it on
-                settle(2500)
-                assertNull("saying no during the pause should be the end of it", vm.power)
-
-                // a job that ends any other way leaves everything on
-                scene("printing", "progress=0.3")
-                settle(3000)
-                tap(a, 926f, 34f)
-                settle(600)
-                tap(a, 350f, 308f)
-                settle(600)
-                assertTrue(vm.offWhenDone)
-                scene("ready")             // gone without finishing
-                settle(10_000)             // longer than it waits to hear how the job ended
-                assertFalse(vm.offWhenDone)
-                assertNull("only a job that finishes should switch things off", vm.power)
-
-                // the plug switched off behind the display's back, long after it started: left alone
-                get("$mock/cm?cmnd=Power%20Off")
-                scene("dead")
-                settle(9000)               // the plug is asked every five seconds
-                shot(a, "21-switched-off")
-                assertFalse("only starting the display switches the plug on by itself", plugIsOn())
-                tap(a, 140f, 289f)         // Switch on
-                settle(1500)
-                shot(a, "22-starting-up")
-
-                // and everything switched off from here, straight after a print
-                scene("done", "tool=180")  // OctoPrint is back
-                settle(9000)
-                scene("done", "tool=180")
-                settle(2500)
-                shot(a, "23-finished-with-plug")
-                tap(a, 926f, 34f)          // power
-                settle(800)
-                shot(a, "24-switch-off")
-                hold(a, 350f, 306f, 1600)  // hold to confirm
-                release(a, 350f, 306f)
-                settle(1200)
-                shot(a, "25-cooling")
-                scene("done", "tool=40")   // cool enough now
-                settle(5000)
-                // the mock can't drop off the network the way a Pi does, so this is as far as it gets
-                shot(a, "26-shutting-down")
-            }
-        }
-    }
-
-    /** Let real time pass for the network threads while keeping the UI's own clock moving. */
-    private fun settle(millis: Long) {
-        val until = System.currentTimeMillis() + millis
-        while (System.currentTimeMillis() < until) {
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(32))
-            Thread.sleep(32)
-        }
-    }
-
-    /** Let real time pass, as [settle] does, until [ready], but never longer than [most]. */
-    private fun settleUntil(most: Long, ready: () -> Boolean) {
-        val until = System.currentTimeMillis() + most
-        while (!ready() && System.currentTimeMillis() < until) settle(32)
-    }
-
-    private fun shot(activity: Activity, name: String) {
-        val file = File(out, "$name.png").path
-        // Off a device nothing lays the window out until something asks for a picture, and
-        // content that is composed during layout (list rows, the camera) only starts loading
-        // then. So: one capture to set things going, a moment for them to load, then the real one.
-        activity.window.decorView.captureRoboImage(file)
+        beforeLaunch = {
+            get("$mock/cm?cmnd=Power%20Off")
+            assertFalse(plugIsOn())
+        },
+    ) { a, vm ->
+        // first run
         settle(1500)
-        activity.window.decorView.captureRoboImage(file)
-    }
+        shot(a, "01-setup")
+        assertTrue("a plug found off as the display starts should be switched on", plugIsOn())
+        // No scheme given and the port only speaks https with a self-signed certificate:
+        // the same situation as a real OctoPi that has plain http switched off.
+        vm.requestAccess(secure)
+        settleUntil(4000) { vm.setup is SetupState.Waiting }
+        shot(a, "02-setup-waiting")
 
-    private var downAt = 0L
+        // the mock approves the key, and the display finds a print in progress, its
+        // picture starting as the file's preview
+        settleUntil(15_000, after = 1000) { vm.link == Link.Online && vm.isIn(Phase.PRINTING) && vm.printing(CHESSBOARD) }
+        tap(a, 110f, 52f)          // picture: the camera instead
+        settle(1500)
+        shot(a, "03-printing-camera", load = 1500)
+        hold(a, 866f, 432f, 800)   // halfway through holding Cancel
+        // One picture, not shot()'s two with a wait between: the wait would see the hold
+        // through to the end, and the print this walk goes on to photograph would be cancelled.
+        a.window.decorView.captureRoboImage(File(out, "03b-holding-cancel.png").path)
+        release(a, 866f, 432f)
+        settle(600)
+        tap(a, 164f, 52f)          // picture: back to the preview
+        settleUntil(4000, after = 1200) { vm.partDrawn() }
+        shot(a, "04-printing-model")
 
-    private fun touch(activity: Activity, action: Int, x: Float, y: Float) {
-        val now = SystemClock.uptimeMillis()
-        if (action == MotionEvent.ACTION_DOWN) downAt = now
-        val e = MotionEvent.obtain(downAt, now, action, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
-        activity.dispatchTouchEvent(e)
-        e.recycle()
-    }
+        scene("printing", "file=2&progress=0.58")
+        settleUntil(6000, after = 1200) { vm.printing(TALL) && vm.partDrawn() }
+        shot(a, "05-printing-tall-part")
 
-    private fun tap(activity: Activity, x: Float, y: Float) {
-        touch(activity, MotionEvent.ACTION_DOWN, x, y)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(48))
-        release(activity, x, y)
-    }
+        // a file the slicer put no preview in: the display fetches its G-code and draws one
+        scene("printing", "file=5&progress=0.55")
+        settleUntil(8000, after = 1500) { vm.printing(CUBE) && vm.partDrawn() }
+        shot(a, "05b-printing-drawn-preview")
 
-    /** Press and keep pressing for [millis] of the UI's own clock. */
-    private fun hold(activity: Activity, x: Float, y: Float, millis: Long) {
-        touch(activity, MotionEvent.ACTION_DOWN, x, y)
-        // one display frame at a time, or the animation only ever sees a single frame
-        repeat((millis / 16).toInt()) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(16)) }
-    }
-
-    private fun release(activity: Activity, x: Float, y: Float) {
-        touch(activity, MotionEvent.ACTION_UP, x, y)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(48))
-    }
-
-    /** Put the mock printer into a named state. False if the mock can't be reached. */
-    private fun scene(name: String, more: String = ""): Boolean = get("$mock/mock/set?scene=$name&$more")
-
-    private fun plugIsOn(): Boolean = URL("$mock/cm?cmnd=Power").readText().contains("\"ON\"")
-
-    /** What the display has told the printer to do since the last time this was asked. */
-    private fun sent(): List<JSONObject> =
-        JSONArray(URL("$mock/mock/sent").readText()).let { list -> List(list.length()) { list.getJSONObject(it) } }
-
-    private fun get(url: String): Boolean = try {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 1500
-        c.readTimeout = 3000
-        (c.responseCode == 200).also { c.disconnect() }
-    } catch (_: Exception) {
-        false
+        // A job of a file with the slicer's picture, never drawn here, started while the camera
+        // is up: the display draws it all the same, so the part grows the moment anyone looks.
+        tap(a, 110f, 52f)          // picture: the camera
+        settle(800)
+        scene("printing", "file=3&progress=0.3")
+        settleUntil(8000, after = 300) { vm.printing(STAND) && vm.partDrawn() }
+        val stand = vm.jobFile
+        assertTrue(
+            "the job's drawing should be made while the camera is up",
+            stand != null && stand.thumbnail != null && vm.thumbs!!.drawn.hasShape(stand),
+        )
+        tap(a, 164f, 52f)          // picture: the preview
+        // the moment after: the part's ghost while its growth is worked out, and no line across it
+        settle(200)
+        a.window.decorView.captureRoboImage(File(out, "05d-switching-to-model.png").path)
+        settle(2500)               // its growth, worked out only now the part is on screen
+        shot(a, "05e-drawn-while-camera-was-up")
+        tap(a, 464f, 52f)          // the part: its other side
+        settle(2500)
+        shot(a, "05f-turned-round")
     }
 }

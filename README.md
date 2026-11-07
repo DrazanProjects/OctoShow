@@ -335,21 +335,24 @@ npm install
 node server.js
 ```
 
-It should say it is listening on http 5000 and https 5443; both ports are fixed, and
-on a Mac the first is usually taken by AirPlay Receiver until that is switched off.
-It answers this machine only. To point a real display at it, set `MOCK_HOST=0.0.0.0`
+It starts six copies of itself, listening on http 5000 to 5005 and https 5443 to
+5448, one for each test that walks the app, so that those can run side by side. The
+ports are fixed, and on a Mac 5000 is usually taken by AirPlay Receiver until that is
+switched off. `node server.js 5000` starts just one copy, on 5000 and 5443. It
+answers this machine only. To point a real display at it, set `MOCK_HOST=0.0.0.0`
 first, bearing in mind that it has a fixed key and takes orders from anyone.
 
 With it running, from the repository root in another terminal:
 
 ```
-gradlew :app:testDebugUnitTest --tests "*ScreenshotTest*"
+gradlew :app:testDebugUnitTest --tests "*Screenshot*"
 ```
 
-runs the real app on the JVM against the mock, walks it through setup, a whole print
-and switching off, and writes every screen at 960×480 to
-`app/build/outputs/screens`. Gradle doesn't know the mock has started, so if it says
-the tests are up to date, add `--rerun-tasks`.
+runs the real app on the JVM against the mock in five walks at once: setup and the
+part, a whole job, the screens around printing, other colors, and switching off. They
+write every screen at 960×480 to `app/build/outputs/screens`, in about a minute on a
+machine with a dozen or more cores. Gradle doesn't know the mock has started, so if it
+says the tests are up to date, add `--rerun`.
 
 `BareSetupTest` does the same against an OctoPrint with every optional part missing
 at once: no camera, no plugins, no presets, no shutdown command, no heated bed, no
@@ -376,8 +379,9 @@ gradlew :app:testDebugUnitTest --tests "*PreviewSamplesTest*"
 gradlew :app:testDebugUnitTest --tests "*RealFileSketchTest*" -Psketch=C:\path\to\file.gcode
 ```
 
-The pictures in `docs` came from these: the screens from `ScreenshotTest`, the
-moving one from `SketchTest`, and the drawn previews from `PreviewSamplesTest`.
+The pictures in `docs` came from these: the screens from the `Screenshot*Test`
+walks, the moving one from `SketchTest`, and the drawn previews from
+`PreviewSamplesTest`.
 
 Two tests talk to the real network and are skipped unless asked for. Both only
 read. One finds OctoPrint, connects, and asks questions that need no key; the other

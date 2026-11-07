@@ -3,6 +3,10 @@
 // The shapes of what it sends follow the OctoPrint and plugin sources, not guesswork.
 //
 //   node server.js [port]
+//
+// With no port it starts six copies, on http 5000-5005 and https 5443-5448, one for each test
+// that walks the app, so that those can run side by side. Each copy has a printer of its own.
+//
 //   GET /mock/set?scene=printing|paused|ready|done|offline|error|prompt|heating|dead&progress=0.4&tool=180&total=86000&display=Some_name.gcode
 //   GET /mock/sent     what the display has told the printer to do since the last time this was asked
 //
@@ -33,6 +37,17 @@ const HOST = process.env.MOCK_HOST || '127.0.0.1';
 const KEY = 'MOCKKEY0123456789ABCDEF';
 const ASSETS = path.join(__dirname, 'assets');
 const now = () => Date.now() / 1000;
+
+// A copy's printer is the one state below, so each copy is a process of its own. The
+// certificate is made once here first, not by every copy at the same moment, and a copy
+// stops when this first process does.
+const COPIES = 6;
+if (!process.argv[2]) {
+  selfSigned();
+  for (let i = 0; i < COPIES; i++) require('child_process').fork(__filename, [String(5000 + i)]);
+  return;
+}
+if (process.send) process.on('disconnect', () => process.exit(0));
 
 const FILES = [
   { name: 'CHESSBOARD_top_front_left_PLA_8h8m.gcode', thumb: 'chessboard', est: 29280, fil: 47210, layers: 33, maxZ: 6.6, age: 1.4 * 3600, last: null },
@@ -345,6 +360,9 @@ function scene(name, q) {
 
 // ---------------- http ----------------
 const pending = new Map();   // app_token -> first poll time
+// How long "someone" takes to approve a key request in OctoPrint's web interface: long
+// enough for the display's waiting screen to be seen, no longer.
+const APPROVE_MS = 2500;
 const json = (res, code, obj) => { const b = obj === undefined ? '' : JSON.stringify(obj); res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(b); };
 const none = res => { res.writeHead(204); res.end(); };
 const body = req => new Promise(r => { let s = ''; req.on('data', c => s += c); req.on('end', () => { try { r(JSON.parse(s || '{}')); } catch { r({}); } }); });
@@ -391,7 +409,7 @@ const handler = async (req, res) => {
   if (p.startsWith('/plugin/appkeys/') && lacks('appkeys')) return json(res, 404, {});
   if (p === '/plugin/appkeys/probe') return none(res);
   if (p === '/plugin/appkeys/request' && req.method === 'POST') { const b = await body(req); const t = 'tok' + Date.now(); pending.set(t, Date.now()); console.log('  appkey requested by', b.app); return json(res, 201, { app_token: t, auth_dialog: `http://x/plugin/appkeys/auth/${t}` }); }
-  if (p.startsWith('/plugin/appkeys/request/')) { const t = p.split('/').pop(); if (!pending.has(t)) return json(res, 404, {}); if (Date.now() - pending.get(t) < 6000) return json(res, 202, { message: 'Awaiting decision' }); pending.delete(t); return json(res, 200, { api_key: KEY }); }
+  if (p.startsWith('/plugin/appkeys/request/')) { const t = p.split('/').pop(); if (!pending.has(t)) return json(res, 404, {}); if (Date.now() - pending.get(t) < APPROVE_MS) return json(res, 202, { message: 'Awaiting decision' }); pending.delete(t); return json(res, 200, { api_key: KEY }); }
 
   // everything else needs the key; a bad key on a POST is a CSRF 400, like the real thing
   if (!authed) return json(res, req.method === 'GET' ? 403 : 400, { error: req.method === 'GET' ? 'Forbidden' : 'CSRF validation failed' });

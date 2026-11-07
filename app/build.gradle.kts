@@ -45,6 +45,9 @@ android {
                 // -Psketch=1 turns on SketchTest, the quick look at one screen
                 it.systemProperty("sketch", providers.gradleProperty("sketch").getOrElse(""))
                 it.maxHeapSize = "2g"
+                // The walks through the screens spend most of their time waiting on a copy of the
+                // mock each: run the test classes side by side, a process each, as the machine allows.
+                it.maxParallelForks = (Runtime.getRuntime().availableProcessors() / 3).coerceIn(1, 8)
             }
         }
     }

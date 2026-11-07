@@ -19,7 +19,7 @@ import java.time.Duration
 
 /**
  * One screen, quickly: for looking at a layout idea before it is worth the
- * four minutes [ScreenshotTest] takes to walk through everything. Same real
+ * minute the walks through every screen take (see [ScreenWalk]). Same real
  * activity, same Echo Show screen, same mock; it just goes straight to the
  * screen in question and photographs each version of it.
  *
