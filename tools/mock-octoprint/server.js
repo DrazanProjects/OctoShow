@@ -9,6 +9,10 @@
 // Add &realpos=1 to be a printer whose firmware reports where the nozzle really is, as REALPOS
 // lines in the terminal log, some way behind what has been sent to it, as a real one always is.
 //
+// Add &sd=1 for a job the printer reads from its own SD card: OctoPrint sends it nothing, so it
+// has no height for it and the Dashboard plugin only has what was left from an earlier job. With
+// &sdname=CHESSB~1.GCO it is known only by the card's short name, as when started on the printer.
+//
 // It also plays the Tasmota smart plug the printer and the Pi are powered through
 // (GET /cm?cmnd=Power%20Off). "dead" is the Pi with its power cut: nothing answers but the plug.
 //
@@ -137,6 +141,8 @@ const S = {
   dead: false,            // the Pi is off: OctoPrint answers nothing
   realpos: false,         // the firmware says where the nozzle really is
   extruded: 0,            // how far the extruder has turned, by those reports
+  sd: false,              // the job is printed from the printer's SD card
+  sdName: null,           // and known by the card's short name
   without: new Set(),     // the optional parts this OctoPrint doesn't have
 };
 const lacks = what => S.without.has(what);
@@ -156,13 +162,20 @@ function stateFlags() {
     },
   };
 }
+function sdEntry() {
+  const name = S.sdName || S.file.name;
+  return { name, display: S.display || name, path: name, origin: 'sdcard', type: 'machinecode', typePath: ['machinecode', 'gcode'],
+           size: 3_900_000, refs: { resource: `http://localhost/api/files/sdcard/${name}` } };
+}
 function jobBlock() {
   const selected = S.file && S.phase !== 'offline';
   const f = S.file;
   const p = selected ? (S.folder ? S.folder + '/' : '') + f.name : null;
+  const sd = selected && S.sd ? sdEntry() : null;
   return {
-    file: selected ? { name: f.name, path: p, display: S.display || f.name, origin: 'local', size: 4_000_000, date: Math.floor(now() - f.age) }
-                   : { name: null, path: null, display: null, origin: null, size: null, date: null },
+    file: sd ? { name: sd.name, path: sd.path, display: sd.display, origin: 'sdcard', size: sd.size, date: null }
+      : selected ? { name: f.name, path: p, display: S.display || f.name, origin: 'local', size: 4_000_000, date: Math.floor(now() - f.age) }
+                 : { name: null, path: null, display: null, origin: null, size: null, date: null },
     estimatedPrintTime: selected ? f.est : null, averagePrintTime: null, lastPrintTime: null,
     filament: selected ? { tool0: { length: f.fil, volume: f.fil * 0.0024 } } : null, user: selected ? '_api' : null,
   };
@@ -188,7 +201,7 @@ function current(withTemp) {
   const active = ['printing', 'paused', 'finishing'].includes(S.phase);
   return {
     state: stateFlags(), job: jobBlock(), progress: progressBlock(),
-    currentZ: active ? layerNow().z : null, offsets: {}, resends: { count: 0, transmitted: 100, ratio: 0 },
+    currentZ: active && !S.sd ? layerNow().z : null, offsets: {}, resends: { count: 0, transmitted: 100, ratio: 0 },
     temps: withTemp && S.phase !== 'offline' ? [tempEntry()] : [], serverTime: now(), busyFiles: [], markings: [],
   };
 }
@@ -209,6 +222,9 @@ function historyTemps() {
 }
 function dashboardFull() {
   const active = ['printing', 'paused', 'finishing'].includes(S.phase);
+  // of a job from the SD card it has seen nothing: these are left from an earlier one
+  if (S.sd) return { totalLayers: '34', currentLayer: '3', layerProgress: '40', maxZ: '6.8', currentHeight: '0.6', fanSpeed: String(S.fan),
+                     cpuPercent: '0', cpuTemp: '0', layerAnalysisError: '[False, False, False]', timeToNextChange: '-' };
   const l = active ? layerNow() : { current: 0, within: 0, z: 0 };
   return {
     totalLayers: String(active ? S.file.layers + 1 : 0), currentLayer: String(l.current), layerProgress: String(l.within),
@@ -277,7 +293,7 @@ function step() {
     if (frac() >= 1) finish();
   }
   broadcast({ current: current(true) });
-  if (S.phase === 'printing' && !lacks('dashboard')) {
+  if (S.phase === 'printing' && !lacks('dashboard') && !S.sd) {
     const l = layerNow();
     plugin('dashboard', { currentLayer: String(l.current) });
     plugin('dashboard', { layerProgress: String(l.within), layerAnalysisError: '[False, False, False]' });
@@ -300,6 +316,8 @@ function finish() {
 function scene(name, q) {
   S.scene = name; S.prompt = null; S.done = false; S.pausedAt = null; S.speed = +(q.speed ?? 1);
   S.realpos = q.realpos === '1';
+  S.sd = q.sd === '1';
+  S.sdName = q.sdname || null;
   S.without = new Set((q.without || '').split(',').filter(Boolean));
   const p = +(q.progress ?? 0.165);
   S.file = FILES[+(q.file ?? 0)] || FILES[0]; S.total = S.file.est; S.started = now() - S.total * p;
@@ -412,6 +430,11 @@ const handler = async (req, res) => {
   if (p === '/api/system/commands/core/shutdown' && req.method === 'POST') { console.log('  SHUTDOWN asked for'); return none(res); }
 
   if (p === '/api/files/local' && req.method === 'GET') { await new Promise(r => setTimeout(r, 1500)); return json(res, 200, listing()); }
+  // the card holds just the job, and OctoPrint can list it but not read it
+  if (p.startsWith('/api/files/sdcard/') && req.method === 'GET') {
+    const e = S.sd && S.file ? sdEntry() : null;
+    return e && e.path === p.slice('/api/files/sdcard/'.length) ? json(res, 200, e) : json(res, 404, { error: 'not found' });
+  }
   if (p.startsWith('/api/files/local/')) {
     const fp = p.slice('/api/files/local/'.length);
     const e = find(fp);

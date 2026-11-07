@@ -141,6 +141,13 @@ class NozzleReplayTest {
 
         val nozzle = NozzleFollower()
         nozzle.useLayers(route.layers.map { it.number }.toIntArray(), route.layers.map { it.z }.toFloatArray())
+        // the same file printed from the SD card, where nothing says which layers have been sent
+        val card = NozzleFollower()
+        card.useLayers(route.layers.map { it.number }.toIntArray(), route.layers.map { it.z }.toFloatArray())
+        var cardMapOf = -1
+        val cardBehind = HashMap<Int, Double>()
+        var cardFillErr = 0.0
+        var cardFillSamples = 0
         val shownLive = HashMap<Int, Double>()
         val shownBehind = HashMap<Int, Double>()
         val shownSent = HashMap<Int, Double>()
@@ -176,12 +183,18 @@ class NozzleReplayTest {
             val sent = moves[min(k + 33, moves.size - 1)]
             val sentLayer = sent.layer
 
-            while (fi < fixes.size && arrival[fi] <= now) { nozzle.add(fixes[fi], arrival[fi]); fi++ }
+            while (fi < fixes.size && arrival[fi] <= now) { nozzle.add(fixes[fi], arrival[fi]); card.add(fixes[fi], arrival[fi]); fi++ }
             val live = nozzle.look(now, sentLayer.takeIf { it >= 1 })
             val shown = nozzle.layer
             if (shown != null && shown != mapOf) {
                 route.layers.firstOrNull { it.number == shown }?.let { nozzle.useMap(LayerMap(route, it)) }
                 mapOf = shown
+            }
+            card.look(now, NozzleFollower.ANY_LAYER)
+            val cardShown = card.layer
+            if (cardShown != null && cardShown != cardMapOf) {
+                route.layers.firstOrNull { it.number == cardShown }?.let { card.useMap(LayerMap(route, it)) }
+                cardMapOf = cardShown
             }
             if (truth >= 1 && m.moving) {
                 shownSent.merge(sentLayer - truth, 1.0, Double::plus)
@@ -193,10 +206,17 @@ class NozzleReplayTest {
                     when { abs(dz) < 0.01f -> "this layer"; dz > 0.3f -> "a hop or more above"; dz > 0 -> "the next layer"; else -> "below" },
                     1.0, Double::plus,
                 )
+                val mb = moves[kBehind]
+                if (live && cardShown != null) {
+                    cardBehind.merge(cardShown - mb.layer, 1.0, Double::plus)
+                    if (cardShown == mb.layer && mb.inLayer >= 0 && perLayer[mb.layer] != null) {
+                        cardFillErr += abs(card.done - (mb.inLayer + along(mb, behind)) / perLayer.getValue(mb.layer))
+                        cardFillSamples++
+                    }
+                }
                 if (live && shown != null) {
                     liveTime++
                     shownLive.merge(shown - truth, 1.0, Double::plus)
-                    val mb = moves[kBehind]
                     shownBehind.merge(shown - mb.layer, 1.0, Double::plus)
                     if (shown == truth && perLayer[truth] != null) {
                         doneErr += abs(nozzle.done - (m.inLayer + along(m, s)) / perLayer.getValue(truth))
@@ -235,6 +255,8 @@ class NozzleReplayTest {
         )
         val fills = fillOff.values.sum()
         for (d in fillOff.keys.sorted()) println("   %+4d%%: %5.1f%%".format(d * 5, 100 * fillOff.getValue(d) / fills))
+        table("printed from the SD card: layer shown against the one 0.7 s before", cardBehind)
+        println("printed from the SD card: fill off by %.1f%% on average".format(100 * cardFillErr / max(1, cardFillSamples)))
         println("what has been sent is %.1f s ahead of the nozzle on average, %.1f s at most".format(leadSum / leadSamples, leadMax))
         val hs = heightOff.values.sum()
         println("Height (OctoPrint's last Z sent) shows: " + heightOff.entries.joinToString { "${it.key} %.1f%%".format(100 * it.value / hs) })

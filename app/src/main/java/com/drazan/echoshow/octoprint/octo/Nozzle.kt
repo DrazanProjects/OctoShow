@@ -1,5 +1,6 @@
 package com.drazan.echoshow.octoprint.octo
 
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -198,12 +199,21 @@ class NozzleFollower {
 
     /**
      * Catches up with [now]. [sent] is the last layer sent to the printer, as the Dashboard
-     * plugin reports it, or null before the first. False when there are no readings to go on.
+     * plugin reports it, or null before the first, or [ANY_LAYER] when nothing says, as when
+     * the printer reads the file from its own SD card. False when there are no readings to go on.
      */
     fun look(now: Long, sent: Int?): Boolean {
         if (!track.sample(now)) return false
         if (track.laying && numbers.isNotEmpty()) {
-            findLayer(track.z, sent)
+            // With nothing to say which layers have been sent, only two readings at one height
+            // say which layer it is. Two at different heights straddle a hop: within a quarter
+            // of a second the nozzle can come down, print a little and go back up, and both
+            // readings be in the air. Otherwise what has been sent rules that out, and waiting
+            // for a pair at one height would only make each new layer show later.
+            val from = track.before
+            val to = track.after
+            val level = from != null && to != null && abs(from.z - to.z) <= SAME_LAYER_MM
+            if (level || sent != ANY_LAYER) findLayer(track.z, sent)
             findMoment()
         }
         return true
@@ -211,9 +221,8 @@ class NozzleFollower {
 
     /**
      * The layer at height [z], and it only ever goes up: the first as high as the nozzle is.
-     * Never one the printer hasn't been sent yet, though. The purge line before the first
-     * layer is laid a little higher than it, and in the odd moment the readings either side
-     * of a hop can still look like plastic going down above the layer.
+     * Never one the printer hasn't been sent yet, though: the purge line before the first
+     * layer is laid a little higher than it.
      */
     private fun findLayer(z: Float, sent: Int?) {
         if (sent == null) return
@@ -222,6 +231,15 @@ class NozzleFollower {
         while (i > 0 && numbers[i] > sent) i--
         val found = numbers[i]
         if (found > sent) return
+        if (sent == ANY_LAYER) {
+            // With nothing to say what has been sent, only plastic at a layer's own height says
+            // which layer it is. A hop up or down passes through heights in between, and the
+            // extruder can still come out a shade ahead across it.
+            if (z < heights[i] - SAME_LAYER_MM) return
+            // Just above the first layer, before any layer is known, it is as likely the purge
+            // line: wait for a clearer answer.
+            if (layer == null && i == 1) return
+        }
         if (layer.let { it == null || found > it }) {
             layer = found
             height = heights[i]
@@ -242,9 +260,9 @@ class NozzleFollower {
         val map = map ?: return
         val from = track.before ?: return
         val to = track.after ?: return
-        // the higher of two readings is in the air, hopped up for a travel to or from there
-        val first = if (from.z > to.z + SAME_LAYER_MM) 0 else map.momentAt(from.x, from.y)
-        val second = if (to.z > from.z + SAME_LAYER_MM) 0 else map.momentAt(to.x, to.y)
+        // a reading above the layer is in the air, hopped up for a travel to or from there
+        val first = if (from.z > height + SAME_LAYER_MM) 0 else map.momentAt(from.x, from.y)
+        val second = if (to.z > height + SAME_LAYER_MM) 0 else map.momentAt(to.x, to.y)
         val at = when {
             first == 0 -> second
             // Off the part by then, or over plastic laid earlier, or further on than a quarter
@@ -264,12 +282,14 @@ class NozzleFollower {
         done = max(0, moment - 1).toFloat() / (GcodePreview.MOMENTS - 1)
     }
 
-    private companion object {
+    companion object {
+        /** For [look]: any layer may have been sent, as nothing reports which. */
+        const val ANY_LAYER = Int.MAX_VALUE
         /** Heights are stored to a hundredth of a millimetre, and a seam can start a shade low. */
-        const val SAME_LAYER_MM = 0.03f
+        private const val SAME_LAYER_MM = 0.03f
         /** About an eighth of a layer. */
-        const val MOST_AT_ONCE = 32
+        private const val MOST_AT_ONCE = 32
         /** Half a second or so at the rate the screen looks. */
-        const val LOST_AFTER_LOOKS = 30
+        private const val LOST_AFTER_LOOKS = 30
     }
 }

@@ -36,10 +36,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drazan.echoshow.octoprint.PrinterViewModel
 import com.drazan.echoshow.octoprint.data.DisplayPrefs
+import com.drazan.echoshow.octoprint.octo.LayerInfo
 import com.drazan.echoshow.octoprint.octo.Outcome
 import com.drazan.echoshow.octoprint.octo.Phase
 import com.drazan.echoshow.octoprint.octo.PrintFile
 import com.drazan.echoshow.octoprint.octo.PrinterSnapshot
+import com.drazan.echoshow.octoprint.octo.SD_CARD
 import com.drazan.echoshow.octoprint.octo.Temp
 import com.drazan.echoshow.octoprint.octo.TempSample
 import com.drazan.echoshow.octoprint.ui.components.ButtonShape
@@ -91,12 +93,20 @@ fun StatusScreen(
     val outcome = vm.outcome
     val active = p.phase.busy
 
-    // What the picture and the "print it" offer are about: the running job, or the newest upload.
-    val subject = if (active || outcome != null) vm.jobFile else (vm.files.newest ?: vm.jobFile)
+    // What the picture and the "print it" offer are about: the running job, drawn from OctoPrint's
+    // own copy when it is printing from the SD card, or the newest upload.
+    val subject = if (active || outcome != null) vm.jobDrawing ?: vm.jobFile else (vm.files.newest ?: vm.jobFile)
 
     // where the nozzle really is, if the firmware says, and otherwise what has been sent to it
     val following = vm.nozzleLayer.takeIf { active }
-    val layers = if (following != null) vm.layers.copy(current = following) else vm.layers
+    // The Dashboard plugin counts the layers OctoPrint sends, and of a file printed from the SD
+    // card it sends none: there the layers come from the nozzle and OctoPrint's copy, or not at all.
+    val fromCard = vm.jobFile?.origin == SD_CARD
+    val layers = when {
+        fromCard -> LayerInfo(current = following, total = vm.nozzleLayers.takeIf { following != null }, fanPercent = vm.layers.fanPercent)
+        following != null -> vm.layers.copy(current = following)
+        else -> vm.layers
+    }
     if (active && vm.nozzleReporting) {
         LaunchedEffect(Unit) {
             while (true) withFrameMillis { vm.followNozzle(SystemClock.elapsedRealtime()) }
@@ -122,7 +132,7 @@ fun StatusScreen(
                 reveal = if (active) layerFraction ?: p.fraction else null,
                 layer = layers.current?.takeIf { active && layers.known },
                 laying = stackMode == StackMode.PRINTING,
-                layerDone = vm.layers.layerProgress?.takeIf { layers.known }?.let { it / 100f },
+                layerDone = layers.layerProgress?.takeIf { layers.known }?.let { it / 100f },
                 liveDone = vm.nozzleDone.takeIf { following != null },
                 onFullCamera = onFullCamera,
                 modifier = Modifier.fillMaxWidth(),
@@ -143,7 +153,7 @@ fun StatusScreen(
             mode = stackMode,
             modifier = Modifier.width(118.dp).fillMaxHeight(),
             liveDone = vm.nozzleDone.takeIf { following != null },
-            callout = { LayerCallout(layers, p.currentZ) },
+            callout = { LayerCallout(layers, if (fromCard) vm.nozzleHeight?.toDouble() else p.currentZ) },
         )
         Spacer(Modifier.width(6.dp))
 
@@ -373,7 +383,9 @@ private fun ColumnScope.Printing(vm: PrinterViewModel, p: PrinterSnapshot) {
     }
     StateLine(word, color)
     Spacer(Modifier.height(10.dp))
-    T(prettyName(p.file?.display.orEmpty()), Type.Title, maxLines = 2)
+    // a file started from the printer's own screen may only be known by the card's short name
+    val copy = vm.jobDrawing?.takeIf { vm.jobFile?.origin == SD_CARD }
+    T(prettyName(copy?.display ?: p.file?.display.orEmpty()), Type.Title, maxLines = 2)
 
     Spacer(Modifier.weight(1f))
 
@@ -406,7 +418,9 @@ private fun ColumnScope.Printing(vm: PrinterViewModel, p: PrinterSnapshot) {
     Spacer(Modifier.height(18.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
         p.printTime?.let { Fact("Running for", duration(it)) }
-        if (vm.layers.known) p.currentZ?.let { Fact("Height", "%.1f mm".format(it)) }
+        // OctoPrint's height is that of the last move it sent, and it sends none from the SD card
+        if (vm.jobFile?.origin == SD_CARD) vm.nozzleHeight?.let { Fact("Height", "%.1f mm".format(it)) }
+        else if (vm.layers.known) p.currentZ?.let { Fact("Height", "%.1f mm".format(it)) }
     }
 
     Spacer(Modifier.weight(1f))

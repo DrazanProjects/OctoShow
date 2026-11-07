@@ -229,10 +229,14 @@ class NozzleTest {
         val nozzle = follower()
         val clock = longArrayOf(1_000L)
         nozzle.at(110f, 116f, 0.8f, clock)
-        // up and over the back of the part, where layer 5 finishes, then down at its front and pushed out
+        // up and over the back of the part, where layer 5 finishes, then down at its front, pushed
+        // out and printing on
         val t = clock[0]
         nozzle.add(NozzleFix(110f, 118f, 1.4f, 1f, t), arrivedAt = t)
         nozzle.add(NozzleFix(110.5f, 101f, 1.0f, 1.8f, t + 250), arrivedAt = t + 250)
+        nozzle.add(NozzleFix(111f, 101.2f, 1.0f, 2.4f, t + 500), arrivedAt = t + 500)
+        nozzle.look(t + 900L, allSent)
+        assertEquals("one reading in the air and one on the layer don't say which layer", 4, nozzle.layer)
         nozzle.look(t + 1_100L, allSent)
         assertEquals(5, nozzle.layer)
         nozzle.useMap(LayerMap(route, route.layers.first { it.number == 5 }))
@@ -253,6 +257,27 @@ class NozzleTest {
         // frame by frame through the quarter second between the two, where each step on is small
         for (frame in 0..16) nozzle.look(t + 700L + frame * 16L, allSent)
         assertTrue("still about where it printed: $before then ${nozzle.done}", nozzle.done < before + 0.05f)
+    }
+
+    @Test
+    fun printedFromTheCardThePurgeIsStillNoLayer() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        // nothing says what has been sent: the purge line, between the first layer and the second
+        nozzle.at(110f, 104f, 0.28f, clock, sent = NozzleFollower.ANY_LAYER)
+        assertNull(nozzle.layer)
+        nozzle.at(110f, 101f, 0.2f, clock, sent = NozzleFollower.ANY_LAYER)
+        assertEquals(1, nozzle.layer)
+        nozzle.at(110f, 101f, 0.4f, clock, sent = NozzleFollower.ANY_LAYER)
+        assertEquals(2, nozzle.layer)
+    }
+
+    @Test
+    fun printedFromTheCardADisplayComingInLateFindsTheLayer() {
+        val nozzle = follower()
+        val clock = longArrayOf(1_000L)
+        nozzle.at(110f, 104f, 1.0f, clock, sent = NozzleFollower.ANY_LAYER)
+        assertEquals(5, nozzle.layer)
     }
 
     @Test

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.os.SystemClock
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -17,6 +18,7 @@ import com.drazan.echoshow.octoprint.data.Prefs
 import com.drazan.echoshow.octoprint.data.Server
 import com.drazan.echoshow.octoprint.octo.FoundServer
 import com.drazan.echoshow.octoprint.octo.HeatPreset
+import com.drazan.echoshow.octoprint.octo.JobFile
 import com.drazan.echoshow.octoprint.octo.JogSpeed
 import com.drazan.echoshow.octoprint.octo.KeyPoll
 import com.drazan.echoshow.octoprint.octo.LayerInfo
@@ -34,6 +36,7 @@ import com.drazan.echoshow.octoprint.octo.PrintFile
 import com.drazan.echoshow.octoprint.octo.Previews
 import com.drazan.echoshow.octoprint.octo.PrinterSnapshot
 import com.drazan.echoshow.octoprint.octo.Prompt
+import com.drazan.echoshow.octoprint.octo.SD_CARD
 import com.drazan.echoshow.octoprint.octo.ServerInfo
 import com.drazan.echoshow.octoprint.octo.ServerTrust
 import com.drazan.echoshow.octoprint.octo.TempSample
@@ -44,6 +47,7 @@ import com.drazan.echoshow.octoprint.octo.discoverOctoPrint
 import com.drazan.echoshow.octoprint.octo.forPeople
 import com.drazan.echoshow.octoprint.octo.normalizeBase
 import com.drazan.echoshow.octoprint.octo.obj
+import com.drazan.echoshow.octoprint.octo.sameFileAs
 import com.drazan.echoshow.octoprint.octo.str
 import com.drazan.echoshow.octoprint.power.Plug
 import com.drazan.echoshow.octoprint.power.PowerOff
@@ -133,6 +137,16 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     /** Details of the selected job's file: its slicer preview and estimates. */
     var jobFile: PrintFile? by mutableStateOf(null)
         private set
+    /**
+     * The file the job's part and layers are drawn from. That is the job's own, except for one
+     * printed from the printer's SD card, which OctoPrint can't read: then it is OctoPrint's own
+     * copy of the same file, when it has one.
+     */
+    val jobDrawing: PrintFile? by derivedStateOf {
+        val job = jobFile
+        if (job?.origin != SD_CARD) job
+        else sameFileAs(JobFile(job.name, job.display, job.path, job.origin), files.newestFirst)
+    }
     var outcome: Outcome? by mutableStateOf(null)
         private set
     /** A question from the printer that is waiting for an answer. */
@@ -155,6 +169,9 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** How high that layer is. */
     var nozzleHeight: Float? by mutableStateOf(null)
+        private set
+    /** How many layers the file [nozzleLayer] counts in has, once its layers have been read. */
+    var nozzleLayers: Int? by mutableStateOf(null)
         private set
     /** Readings of the nozzle's real position are coming in. */
     var nozzleReporting by mutableStateOf(false)
@@ -385,7 +402,12 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         // The running job's drawing is made whatever is on screen. A job started while the
         // screen is dark or showing the camera should have it ready by the time anyone looks.
         val job = jobFile
-        if (p.phase.busy && job != null && job.path == p.file?.path && job.origin == p.file.origin) wantShape(job)
+        if (p.phase.busy && job != null && job.path == p.file?.path && job.origin == p.file.origin) {
+            // one from the SD card is drawn from OctoPrint's own copy, found in its file list,
+            // asked for once rather than every second should OctoPrint not give it
+            if (job.origin == SD_CARD && !files.loaded && files.error == null) wantFiles()
+            jobDrawing?.let { wantShape(it) }
+        }
     }
 
     /** One finished run of one file: a reprint takes a different time, so it counts as new. */
@@ -587,12 +609,15 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Whether [file] may be fetched and drawn right now. While a job runs the Pi
      * has better things to do than serve the whole library, so only the file
-     * being printed is allowed; the rest waits until the printer is free.
+     * being printed is allowed, or OctoPrint's copy of it when it comes from the
+     * SD card; the rest waits until the printer is free.
      */
     private fun mayDraw(file: PrintFile): Boolean {
         val p = printer ?: return false
         if (link != Link.Online) return false
-        return !p.phase.busy || (p.file?.path == file.path && p.file.origin == file.origin)
+        val drawing = jobDrawing
+        return !p.phase.busy || (p.file?.path == file.path && p.file.origin == file.origin) ||
+            (drawing != null && drawing.path == file.path && drawing.origin == file.origin)
     }
 
     /** What to say in place of a picture that isn't there. */
@@ -766,14 +791,17 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
      * for every frame while readings are coming in.
      */
     fun followNozzle(now: Long) {
-        val live = nozzle.look(now, sent = layers.current?.takeIf { it > 0 })
+        // The Dashboard plugin counts the layers OctoPrint sends, and it sends none of a file
+        // the printer reads from its own SD card, so what it has is left over from another job.
+        val fromCard = jobFile?.origin == SD_CARD
+        val live = nozzle.look(now, sent = if (fromCard) NozzleFollower.ANY_LAYER else layers.current?.takeIf { it > 0 })
         if (!live) {
             nozzleReporting = false
             nozzleLayer = null
             nozzleHeight = null
             return
         }
-        val file = jobFile ?: return
+        val file = jobDrawing ?: return
         if (nozzle.knowsLayers) {
             val layer = nozzle.layer
             if (layer != nozzleLayer) {
@@ -792,7 +820,10 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         if (nozzleWork?.isActive == true) return
         nozzleWork = session?.launch {
             val found = withContext(Dispatchers.IO) { store.layersOf(file) }
-            if (found != null) nozzle.useLayers(found.first, found.second)
+            if (found != null) {
+                nozzle.useLayers(found.first, found.second)
+                nozzleLayers = found.first.maxOrNull()
+            }
             // a file not drawn yet: this is asked again once a second or so, as the frames go by
             else delay(NOZZLE_ASK_AGAIN_MS)
         }
@@ -812,6 +843,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         nozzle.reset()
         nozzleLayer = null
         nozzleHeight = null
+        nozzleLayers = null
         nozzleReporting = false
         nozzleFilled.floatValue = 0f
     }

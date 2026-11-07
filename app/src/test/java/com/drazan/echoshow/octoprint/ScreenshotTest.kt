@@ -150,8 +150,31 @@ class ScreenshotTest {
                 settle(3800)
                 assertNull("with the readings gone it should go back to what it was told", vm.nozzleLayer)
 
-                // a job long enough for the time left to need its widest form
+                // Printed from the printer's SD card and known only by the card's short name: OctoPrint
+                // can't read the file, so the part and its layers come from its own copy, and what the
+                // Dashboard plugin says is left from an earlier job. Well into a layer, so the picture
+                // shows it filling.
+                scene("printing", "file=5&progress=0.762&realpos=1&sd=1&sdname=CALIBR~1.GCO")
+                // The copy is drawn afresh, as the mock dates its files anew each time it lists them,
+                // then its layers and the map of the one being laid are read, and only then can the
+                // picture of that layer, filled as far as the nozzle has got, be made.
+                val cube = "calibration_cube_PLA_22m.gcode"
+                settleUntil(15_000) {
+                    vm.jobDrawing?.let { vm.thumbs!!.drawn.hasShape(it) } == true && vm.jobDrawing?.name == cube &&
+                        vm.nozzleLayer in 74..77 && vm.nozzleLayers == 100 && vm.nozzleDone.value > 0f
+                }
+                settle(2000)
+                assertEquals("OctoPrint's own copy stands in", cube, vm.jobDrawing?.name)
+                val cardLayer = vm.nozzleLayer
+                assertTrue("layer $cardLayer should be the one the print has got to, not the Dashboard's 3", cardLayer in 74..77)
+                assertEquals("the copy's layers, not the Dashboard's 33", 100, vm.nozzleLayers)
+                shot(a, "05h-printing-from-the-sd-card")
+
+                // A job long enough for the time left to need its widest form. A new job on a real
+                // printer forgets the last one's nozzle, and the mock starts none: wait for those
+                // readings to go out of date instead.
                 scene("printing", "progress=0.02&total=86000")
+                settleUntil(8000) { vm.nozzleLayer == null }
                 settle(3500)
                 shot(a, "05c-printing-long-job")
 
@@ -381,6 +404,12 @@ class ScreenshotTest {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(32))
             Thread.sleep(32)
         }
+    }
+
+    /** Let real time pass, as [settle] does, until [ready], but never longer than [most]. */
+    private fun settleUntil(most: Long, ready: () -> Boolean) {
+        val until = System.currentTimeMillis() + most
+        while (!ready() && System.currentTimeMillis() < until) settle(32)
     }
 
     private fun shot(activity: Activity, name: String) {
