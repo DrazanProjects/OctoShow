@@ -20,8 +20,15 @@
 // It also plays the Tasmota smart plug the printer and the Pi are powered through
 // (GET /cm?cmnd=Power%20Off). "dead" is the Pi with its power cut: nothing answers but the plug.
 //
-// Add &without=camera,dashboard,thumbs,lights,presets,shutdown,bed,appkeys (any of them) to be
-// an OctoPrint that lacks those: no webcam set up, plugins not installed, no temperature
+// It has the OctoShow plugin (octoprint-plugin/), which carries "switch off" from the iPhone
+// app to the Echo Show display and the display's progress back. Add &echoshow=1 for an Echo Show
+// that has reported in with a smart plug, and plays the switch-off when the phone asks for one:
+// the nozzle cooling, the Pi told to shut down, and then this OctoPrint going dead, as a real one
+// does, before the display can say any more.
+// GET /mock/sent lists the requests that came through the plugin, among the rest.
+//
+// Add &without=camera,dashboard,thumbs,lights,presets,shutdown,bed,appkeys,octoshow (any of them)
+// to be an OctoPrint that lacks those: no webcam set up, plugins not installed, no temperature
 // presets, no shutdown command, a printer with no heated bed, no way to ask for a key.
 // "deadcamera" is the usual state of an OctoPi with no camera plugged in: one is set up,
 // and nothing answers at its address.
@@ -159,6 +166,10 @@ const S = {
   sd: false,              // the job is printed from the printer's SD card
   sdName: null,           // and known by the card's short name
   without: new Set(),     // the optional parts this OctoPrint doesn't have
+  shown: null,            // the last status a display reported through the OctoShow plugin
+  shownAt: 0,             // and when, in seconds
+  standIn: null,          // the Echo Show this mock plays itself, when asked to: its status
+  standInRun: null,       // and the switch-off it is playing, if any
 };
 const lacks = what => S.without.has(what);
 const elapsed = () => (S.pausedAt ?? now()) - S.started;
@@ -248,6 +259,42 @@ function dashboardFull() {
   };
 }
 
+// ---------------- the OctoShow plugin, and an Echo Show to go with it ----------------
+const DISPLAY_FRESH_S = 90;
+const realDisplay = () => S.shown && now() - S.shownAt <= DISPLAY_FRESH_S ? { ...S.shown, age: Math.round(now() - S.shownAt) } : null;
+const shown = () => realDisplay() ?? (S.standIn ? { ...S.standIn, age: 4 } : null);
+function standInSays(change) {
+  Object.assign(S.standIn, change);
+  plugin('octoshow', { type: 'display', display: { ...S.standIn, age: 0 } });
+}
+
+/** The stand-in display doing what a real one does with a request: see android/…/power/PowerOff.kt. */
+function standInHears(action) {
+  const d = S.standIn;
+  const busy = ['printing', 'paused'].includes(S.phase);
+  if (action === 'offWhenDone') return standInSays({ offWhenDone: busy });
+  if (action === 'stay') {
+    const early = !d.step || ['confirm', 'afterPrint', 'cooling', 'failed'].includes(d.step.kind);
+    if (early) { clearInterval(S.standInRun); S.standInRun = null; standInSays({ offWhenDone: false, step: null }); }
+    return;
+  }
+  if (S.standInRun) return;
+  if (busy) return standInSays({ step: { kind: 'failed', message: 'A print is running' } });
+  // Heaters off, then the nozzle cools a few degrees a tick and the Pi is told to shut down. From
+  // there on a real display's words can't reach the phone: the Pi carries OctoPrint, and it is
+  // going. So this OctoPrint goes quiet straight after "shuttingDown", and the rest (the Pi
+  // settling, the plug cutting the power) happens out of anyone's sight, as it would.
+  S.tool.target = 0; S.bed.target = 0;
+  S.standInRun = setInterval(() => {
+    S.tool.actual = Math.max(22, S.tool.actual - 18);
+    if (S.tool.actual >= 50) return standInSays({ step: { kind: 'cooling', nozzle: Math.round(S.tool.actual) } });
+    standInSays({ step: { kind: 'shuttingDown' } });
+    clearInterval(S.standInRun); S.standInRun = null;
+    setTimeout(() => { S.dead = true; for (const ws of sockets) ws.terminate(); }, 1500);   // the Pi halts
+    setTimeout(() => { S.plug = false; Object.assign(S.standIn, { step: { kind: 'off' }, plugOn: false }); }, 5000);
+  }, 1000);
+}
+
 // ---------------- sockets ----------------
 const sockets = new Set();
 const broadcast = obj => { const s = JSON.stringify(obj); for (const ws of sockets) if (ws.authed) ws.send(s); };
@@ -333,6 +380,10 @@ function scene(name, q) {
   S.realpos = q.realpos === '1';
   S.sd = q.sd === '1';
   S.sdName = q.sdname || null;
+  clearInterval(S.standInRun); S.standInRun = null;
+  S.standIn = q.echoshow === '1'
+    ? { name: 'Echo Show', plug: true, plugOn: true, canGoOff: true, offWhenDone: false, step: null }
+    : null;
   S.without = new Set((q.without || '').split(',').filter(Boolean));
   const p = +(q.progress ?? 0.165);
   S.file = FILES[+(q.file ?? 0)] || FILES[0]; S.total = S.file.est; S.started = now() - S.total * p;
@@ -510,6 +561,28 @@ const handler = async (req, res) => {
     console.log('  prompt answered:', b.choice);
     S.prompt = null; plugin('action_command_prompt', { action: 'close' });
     return none(res);
+  }
+  if (p === '/api/plugin/octoshow') {
+    if (lacks('octoshow')) return json(res, 404, {});
+    if (req.method === 'GET') return json(res, 200, { display: shown() });
+    const b = await body(req);
+    if (b.command === 'status') {
+      const keep = ['name', 'plug', 'plugOn', 'canGoOff', 'offWhenDone', 'step'];
+      S.shown = Object.fromEntries(keep.map(k => [k, b[k] ?? null]));
+      S.shownAt = now();
+      plugin('octoshow', { type: 'display', display: { ...S.shown, age: 0 } });
+      return none(res);
+    }
+    if (b.command === 'power') {
+      if (!['off', 'offWhenDone', 'stay'].includes(b.action)) return json(res, 400, { error: 'Unknown action' });
+      if (!shown()) return json(res, 409, { error: 'No display is listening' });
+      console.log('  power request:', b.action);
+      S.sent.push({ octoshow: b.action });
+      plugin('octoshow', { type: 'request', action: b.action });
+      if (S.standIn && !realDisplay()) standInHears(b.action);
+      return none(res);
+    }
+    return json(res, 400, { error: 'Unknown command' });
   }
   if (p === '/api/plugin/LightControls' && req.method === 'POST') {
     const b = await body(req);

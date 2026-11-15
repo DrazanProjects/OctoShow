@@ -1,10 +1,12 @@
+# Echo Show app (android/): Gradle and Android Studio output, and the SDK location
 *.iml
 .gradle
 /.idea/
+/android/.idea/
 .kotlin
 .DS_Store
-/build
-/captures
+/android/build
+/android/captures
 .externalNativeBuild
 .cxx
 local.properties
@@ -12,3 +14,23 @@ local.properties
 # mock OctoPrint: dependencies and its throwaway localhost certificate
 tools/mock-octoprint/node_modules/
 *.pem
+
+# iPhone app: the Xcode project and Info.plist are generated from ios/project.yml by XcodeGen
+ios/*.xcodeproj/
+ios/OctoShow/Info.plist
+ios/Packages/*/.build/
+ios/Packages/*/.swiftpm/
+xcuserdata/
+DerivedData/
+# your own bundle identifier and team (see ios/Signing.xcconfig)
+ios/Local.xcconfig
+
+# signing keys never belong here
+*.jks
+*.keystore
+
+# run files written by local tooling
+.scp-progress.json
+.scp-test-baseline.json
+.scp-test-results.json
+.scp-implement-errors.log
