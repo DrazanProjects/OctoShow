@@ -42,6 +42,8 @@ struct OctoShowApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    /// Read so the whole app is laid out again, with fonts to match, when the text size changes.
+    @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
         Group {
@@ -53,6 +55,7 @@ struct RootView: View {
             }
         }
         .background(Ink.black.ignoresSafeArea())
+        .id(textSize)
     }
 }
 
@@ -68,19 +71,21 @@ struct MainView: View {
         @Bindable var model = model
         let tab = $model.tab
         TabView(selection: tab) {
-            StatusView(session: session, goToFiles: { model.tab = .files })
-                .tabItem { Label("Status", systemImage: "square.stack.3d.up.fill") }
-                .tag(AppTab.status)
-            FilesView(session: session, printed: { model.tab = .status })
-                .tabItem { Label("Files", systemImage: "folder.fill") }
-                .tag(AppTab.files)
-            ControlsView(session: session)
-                .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
-                .tag(AppTab.controls)
-            SettingsView(session: session)
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(AppTab.settings)
+            Tab("Status", systemImage: "square.stack.3d.up.fill", value: AppTab.status) {
+                StatusView(session: session, goToFiles: { model.tab = .files })
+            }
+            Tab("Files", systemImage: "folder.fill", value: AppTab.files) {
+                FilesView(session: session, printed: { model.tab = .status })
+            }
+            Tab("Controls", systemImage: "slider.horizontal.3", value: AppTab.controls) {
+                ControlsView(session: session)
+            }
+            Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+                SettingsView(session: session)
+            }
         }
+        .modifier(MinimizingTabBar())
+        .sensoryFeedback(.selection, trigger: model.tab)
         .overlay(alignment: .bottom) { NoticeToast(text: session.notice).padding(.bottom, 64) }
         .sheet(isPresented: Binding(get: { session.prompt != nil }, set: { _ in })) {
             if let prompt = session.prompt { PromptSheet(prompt: prompt, answer: session.answerPrompt) }
@@ -123,12 +128,8 @@ struct PromptSheet: View {
                 // The printer's first answer is usually the one it expects; the rest are quieter.
                 ForEach(Array(prompt.choices.enumerated()), id: \.offset) { i, choice in
                     if i == 0 {
-                        Button { answer(i) } label: {
-                            Text(choice).font(.button).frame(maxWidth: .infinity, minHeight: 50)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.roundedRectangle(radius: 14))
-                        .foregroundStyle(Ink.black)
+                        Button { answer(i) } label: { Text(choice) }
+                            .buttonStyle(PrimaryButtonStyle(height: 50))
                     } else {
                         QuietButton(title: choice, height: 50) { answer(i) }
                     }
@@ -140,5 +141,16 @@ struct PromptSheet: View {
         .presentationDetents([.medium])
         .presentationBackground(Ink.panel)
         .interactiveDismissDisabled()
+    }
+}
+
+/// On iOS 26 and later the tab bar shrinks out of the way while a page scrolls down.
+private struct MinimizingTabBar: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            content
+        }
     }
 }

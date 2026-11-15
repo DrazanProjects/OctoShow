@@ -14,6 +14,7 @@ struct AlertsView: View {
     var body: some View {
         @Bindable var prefs = prefs
         Form {
+            Group {
             Section {
                 Text("Once set up, OctoPrint tells you when a print finishes, fails or pauses (a filament runout pauses it), and when the printer reports an error, whether or not this app is open.")
                     .font(.footnote).foregroundStyle(Ink.soft)
@@ -59,6 +60,8 @@ struct AlertsView: View {
                 .disabled(testing)
                 if let tested { Text(tested).font(.footnote).foregroundStyle(Ink.soft) }
             }
+            }
+            .listRowBackground(Ink.panel)
         }
         .scrollContentBackground(.hidden)
         .background(Ink.black)

@@ -12,7 +12,8 @@ struct SetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
+                    LayerMark().frame(width: 44, height: 40).padding(.bottom, 6)
                     Text("OctoShow").font(.heroWord).foregroundStyle(Ink.bone)
                     Text("Your printer, from your phone. Pick your OctoPrint below while you're on the same Wi‑Fi as it.")
                         .font(.body).foregroundStyle(Ink.soft)
@@ -126,12 +127,8 @@ struct SetupView: View {
             }
             Button(action: go) {
                 Text(haveKey ? "Connect with this key" : "Ask OctoPrint for access")
-                    .font(.button)
-                    .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.roundedRectangle(radius: 14))
-            .foregroundStyle(Ink.black)
+            .buttonStyle(PrimaryButtonStyle())
             .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
             Button(haveKey ? "Ask for a key instead" : "I have a key") { haveKey.toggle() }
                 .font(.label)
@@ -157,5 +154,17 @@ struct SetupView: View {
     private func go() {
         focused = false
         if haveKey { model.useKey(address, key: key) } else { model.requestAccess(address) }
+    }
+}
+
+/// The app's mark: four layers, the top one hot, as on its icon.
+private struct LayerMark: View {
+    var body: some View {
+        VStack(spacing: 5) {
+            ForEach(0..<4, id: \.self) { i in
+                Capsule().fill(i == 0 ? AnyShapeStyle(.tint) : AnyShapeStyle(Ink.bone))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

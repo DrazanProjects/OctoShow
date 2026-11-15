@@ -15,6 +15,10 @@ enum Ink {
     static let ok = Color(hex: 0x5BD6A0)
     static let warn = Color(hex: 0xFFC857)
     static let bad = Color(hex: 0xFF5A5F)
+    /// Behind a file's picture: lighter at the middle, like a lamp over the bed, so a part the
+    /// slicer drew in dark filament still stands out.
+    static let well = EllipticalGradient(colors: [Color(hex: 0x474D55), Color(hex: 0x24272B)],
+                                         center: .center, startRadiusFraction: 0, endRadiusFraction: 0.75)
 }
 
 /// A color on offer, and what to call it.
@@ -63,17 +67,24 @@ extension Color {
 
 /// One family, Archivo, a variable font. Its width axis does the work, as on the display:
 /// live values run wide, text sits at normal width, dense metadata narrows.
+///
+/// Every style follows the reader's text size setting. The big display styles stop growing at
+/// a ceiling, so a time left still fits across the screen at the largest sizes.
 enum Archivo {
-    static func font(_ size: CGFloat, weight: CGFloat = 400, width: CGFloat = 100, relativeTo style: UIFont.TextStyle = .body) -> Font {
-        let key = "\(size)-\(weight)-\(width)-\(style.rawValue)"
+    @MainActor
+    static func font(_ size: CGFloat, weight: CGFloat = 400, width: CGFloat = 100,
+                     relativeTo style: UIFont.TextStyle = .body, upTo ceiling: CGFloat? = nil) -> Font {
+        let category = UIApplication.shared.preferredContentSizeCategory
+        let key = "\(size)-\(weight)-\(width)-\(style.rawValue)-\(category.rawValue)"
         if let hit = cache[key] { return hit }
-        let f = Font(uiFont(size, weight: weight, width: width, relativeTo: style))
+        let f = Font(uiFont(size, weight: weight, width: width, relativeTo: style, upTo: ceiling))
         cache[key] = f
         return f
     }
 
     /// The same, for UIKit: scaled with the reader's text size setting.
-    static func uiFont(_ size: CGFloat, weight: CGFloat = 400, width: CGFloat = 100, relativeTo style: UIFont.TextStyle = .body) -> UIFont {
+    static func uiFont(_ size: CGFloat, weight: CGFloat = 400, width: CGFloat = 100,
+                       relativeTo style: UIFont.TextStyle = .body, upTo ceiling: CGFloat? = nil) -> UIFont {
         let descriptor = UIFontDescriptor(fontAttributes: [
             // the variable font's default instance; the axes below move it anywhere
             .name: "ArchivoRoman-Regular",
@@ -82,25 +93,30 @@ enum Archivo {
                 0x7764_7468: width, // 'wdth'
             ],
         ])
-        return UIFontMetrics(forTextStyle: style).scaledFont(for: UIFont(descriptor: descriptor, size: size))
+        let base = UIFont(descriptor: descriptor, size: size)
+        let metrics = UIFontMetrics(forTextStyle: style)
+        return ceiling.map { metrics.scaledFont(for: base, maximumPointSize: $0) } ?? metrics.scaledFont(for: base)
     }
 
     nonisolated(unsafe) private static var cache: [String: Font] = [:]
 }
 
+@MainActor
 extension Font {
     /// The one number you read from across the room.
-    static let hero = Archivo.font(56, weight: 700, width: 125, relativeTo: .largeTitle)
-    static let heroUnit = Archivo.font(22, weight: 500, width: 125, relativeTo: .title2)
+    static var hero: Font { Archivo.font(56, weight: 700, width: 125, relativeTo: .largeTitle, upTo: 72) }
+    static var heroUnit: Font { Archivo.font(22, weight: 500, width: 125, relativeTo: .title2, upTo: 30) }
     /// Words standing where the hero number would be: Ready, Done, Offline.
-    static let heroWord = Archivo.font(36, weight: 700, width: 125, relativeTo: .largeTitle)
-    static let reading = Archivo.font(24, weight: 600, width: 125, relativeTo: .title2)
-    static let title = Archivo.font(19, weight: 600, relativeTo: .title3)
-    static let heading = Archivo.font(16, weight: 600, relativeTo: .headline)
-    static let body = Archivo.font(15, relativeTo: .body)
-    static let label = Archivo.font(13, weight: 500, relativeTo: .subheadline)
-    static let meta = Archivo.font(13, weight: 500, width: 84, relativeTo: .footnote)
-    static let button = Archivo.font(16, weight: 600, relativeTo: .body)
+    static var heroWord: Font { Archivo.font(36, weight: 700, width: 125, relativeTo: .largeTitle, upTo: 48) }
+    static var reading: Font { Archivo.font(24, weight: 600, width: 125, relativeTo: .title2, upTo: 34) }
+    /// A screen's name, in place of a navigation bar's.
+    static var screenTitle: Font { Archivo.font(30, weight: 700, width: 112, relativeTo: .largeTitle, upTo: 42) }
+    static var title: Font { Archivo.font(19, weight: 600, relativeTo: .title3) }
+    static var heading: Font { Archivo.font(16, weight: 600, relativeTo: .headline) }
+    static var body: Font { Archivo.font(15, relativeTo: .body) }
+    static var label: Font { Archivo.font(13, weight: 500, relativeTo: .subheadline) }
+    static var meta: Font { Archivo.font(13, weight: 500, width: 84, relativeTo: .footnote) }
+    static var button: Font { Archivo.font(16, weight: 600, relativeTo: .body, upTo: 28) }
 }
 
 /* ---------------- surfaces ---------------- */
@@ -111,7 +127,9 @@ struct PanelBackground: ViewModifier {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.panel, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Ink.panel, in: .rect(cornerRadius: 22, style: .continuous))
+            // a hairline, so panels keep their edge on a pure black ground
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Ink.line.opacity(0.55), lineWidth: 0.5))
     }
 }
 

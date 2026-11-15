@@ -10,6 +10,7 @@ struct SettingsView: View {
         @Bindable var prefs = prefs
         NavigationStack {
             Form {
+                Group {
                 Section("Printer") {
                     row("OctoPrint", session.info.version.isEmpty ? "–" : session.info.version)
                     row("At home", session.server.home.base.absoluteString)
@@ -44,6 +45,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("This phone's key is listed in OctoPrint under Settings › Application Keys as “\(AppModel.appName)”, where it can be revoked.")
                 }
+                }
+                .listRowBackground(Ink.panel)
             }
             .scrollContentBackground(.hidden)
             .background(Ink.black)
@@ -122,6 +125,7 @@ struct AwayView: View {
 
     var body: some View {
         Form {
+            Group {
             Section {
                 Picker("How", selection: $kind) {
                     ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
@@ -171,6 +175,8 @@ struct AwayView: View {
                     }
                 }
             }
+            }
+            .listRowBackground(Ink.panel)
         }
         .scrollContentBackground(.hidden)
         .background(Ink.black)

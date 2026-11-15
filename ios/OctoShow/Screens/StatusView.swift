@@ -1,44 +1,284 @@
 import SwiftUI
 
-/// The screen the app lives on: the part (or the camera), how long is left, the heat, and
-/// pause and cancel. Cancel has to be held, so a bumped phone can't end an eight-hour print.
+/// The screen the app lives on: the part (or the camera), how long is left, the heat, and pause
+/// and cancel, which stay pinned above the tabs while a job runs. Cancel has to be held, so a
+/// bumped phone can't end an eight-hour print.
 struct StatusView: View {
     let session: PrinterSession
     let goToFiles: () -> Void
     @Environment(Prefs.self) private var prefs
+    @Environment(\.dynamicTypeSize) private var textSize
+    @State private var fullScreen = false
+
+    private var phase: Phase? { session.printer?.phase }
+    private var busy: Bool { phase?.busy == true }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    LinkBanner(session: session)
-                    picture
-                    summary
-                    heat
-                    actions
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ScreenHeader(title: session.displayName, subtitle: subtitle, session: session)
+                LinkBanner(session: session)
+                PicturePanel(session: session, expand: { fullScreen = true })
+                summary
+                    .animation(.smooth, value: phase)
+                heat
             }
-            .refreshable { session.reconnectNow() }
-            .background(Ink.black)
-            .navigationTitle(session.displayName)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { ViaBadge(session: session) }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .scrollIndicators(.hidden)
+        .refreshable { session.reconnectNow() }
+        .background(Ink.black)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let p = session.printer, p.phase.busy {
+                JobActions(session: session, phase: p.phase)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .animation(.smooth, value: busy)
+        .fullScreenCover(isPresented: $fullScreen) {
+            FullScreenPicture(session: session)
         }
     }
 
-    private var phase: Phase? { session.printer?.phase }
+    /// What the printer is doing, in a few words, under the printer's name.
+    private var subtitle: String? {
+        guard session.link == .online, let p = session.printer else { return nil }
+        switch p.phase {
+        case .printing: return "Printing · \(Int((p.fraction * 100).rounded()))%"
+        case .starting: return "Starting a print"
+        case .paused, .pausing: return "Paused"
+        case .resuming: return "Resuming"
+        case .cancelling: return "Cancelling"
+        case .finishing: return "Finishing"
+        case .ready: return session.outcome == nil ? "Ready" : "Finished"
+        case .offline: return "Printer offline"
+        case .error: return "Printer error"
+        case .connecting: return "Connecting the printer"
+        }
+    }
 
-    /* ---------------- the part or the camera ---------------- */
+    /* ---------------- how it's going ---------------- */
 
     @ViewBuilder
-    private var picture: some View {
+    private var summary: some View {
+        if let o = session.outcome, !busy {
+            FinishedCard(outcome: o, dismiss: session.dismissOutcome)
+        } else if let p = session.printer, p.phase.busy {
+            JobCard(session: session, printer: p)
+        } else if let p = session.printer, p.phase == .ready {
+            ReadyCard(newest: session.files.newestFirst.first, goToFiles: goToFiles)
+                .onAppear { session.wantFiles() }
+        } else if let p = session.printer, p.phase == .offline || p.phase == .error {
+            OfflineCard(printer: p, connect: session.connectPrinter)
+        } else if session.link == .online {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Connecting the printer…").font(.body).foregroundStyle(Ink.soft)
+            }
+            .panel()
+        }
+    }
+
+    /* ---------------- heat ---------------- */
+
+    @ViewBuilder
+    private var heat: some View {
+        if let p = session.printer, p.tool != nil || p.bed != nil {
+            let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+            layout {
+                HeatCard(label: "Nozzle", temp: p.tool, trace: session.temps.suffix(90).map(\.tool), color: prefs.accent)
+                if p.hasBed {
+                    HeatCard(label: "Bed", temp: p.bed, trace: session.temps.suffix(90).map(\.bed), color: Ink.bed)
+                }
+            }
+        }
+    }
+}
+
+/* ---------------- the job ---------------- */
+
+/// Time left set large, when it'll be done, the file, and how far through.
+private struct JobCard: View {
+    let session: PrinterSession
+    let printer: PrinterSnapshot
+    @Environment(Prefs.self) private var prefs
+
+    var body: some View {
+        let layers = session.layers
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let left = printer.printTimeLeft, printer.phase != .starting {
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            ForEach(Array(durationParts(left).enumerated()), id: \.offset) { _, part in
+                                Text(part.0).font(.hero).foregroundStyle(Ink.bone).monospacedDigit()
+                                    .contentTransition(.numericText(countsDown: true))
+                                Text(part.1).font(.heroUnit).foregroundStyle(Ink.soft).padding(.trailing, 6)
+                            }
+                        }
+                        .animation(.smooth, value: left / 60)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(duration(left)) left")
+                        Text("left · done \(whenIs(Date().addingTimeInterval(TimeInterval(left))))")
+                            .font(.label).foregroundStyle(Ink.soft)
+                    } else {
+                        Text(printer.phase == .starting ? "Heating up" : "Working it out")
+                            .font(.heroWord).foregroundStyle(Ink.bone)
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                    }
+                    if let f = printer.file {
+                        Text(prettyName(f.display)).font(.title).foregroundStyle(Ink.bone)
+                            .lineLimit(3)
+                            .padding(.top, 12)
+                    }
+                }
+                Spacer(minLength: 0)
+                LayerStack(fraction: printer.fraction, layer: layers.known ? layers.current : nil,
+                           total: layers.known ? layers.total : nil,
+                           layerProgress: layers.layerProgress, filament: prefs.filament, hot: prefs.accent)
+                    .frame(width: 48)
+                    .padding(.top, 10)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                ProgressTrack(fraction: printer.fraction, color: printer.phase == .paused ? Ink.warn : prefs.accent)
+                HStack(spacing: 12) {
+                    Text("\(Int((printer.fraction * 100).rounded()))%")
+                        .contentTransition(.numericText())
+                    if layers.known, let l = layers.current, let t = layers.total { Text("Layer \(l) of \(t)") }
+                    Spacer()
+                    if let z = printer.currentZ, z > 0 { Text(String(format: "Z %.2f mm", z)) }
+                }
+                .font(.meta).foregroundStyle(Ink.soft).monospacedDigit()
+                .animation(.smooth, value: printer.fraction)
+            }
+        }
+        .panel(padding: 18)
+    }
+}
+
+/// Pause or resume, and hold to cancel: pinned above the tabs for as long as a job runs.
+private struct JobActions: View {
+    let session: PrinterSession
+    let phase: Phase
+    @Environment(\.dynamicTypeSize) private var textSize
+
+    var body: some View {
+        // side by side, or stacked when the text is too big for two across
+        let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 12))
+        layout {
+            if phase == .paused {
+                Button(action: session.resume) { Label("Resume", systemImage: "play.fill") }
+                    .buttonStyle(PrimaryButtonStyle())
+            } else {
+                Button(action: session.pause) { Label("Pause", systemImage: "pause.fill") }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(!phase.canPause)
+            }
+            HoldButton(title: "Hold to cancel", systemImage: "xmark", enabled: phase.canCancel, action: session.cancel)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background {
+            // solid behind the buttons, and fading out just above them, so the page slips
+            // under the bar rather than being cut off by it
+            VStack(spacing: 0) {
+                LinearGradient(colors: [Ink.black.opacity(0), Ink.black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 24)
+                Ink.black
+            }
+            .padding(.top, -24)
+            .ignoresSafeArea(edges: .bottom)
+        }
+    }
+}
+
+private struct ReadyCard: View {
+    let newest: PrintFile?
+    let goToFiles: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Ready").font(.heroWord).foregroundStyle(Ink.bone)
+            Text("Nothing printing.").font(.body).foregroundStyle(Ink.soft)
+            Button(action: goToFiles) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Caption(newest == nil ? "Files" : "Newest upload")
+                        Text(newest.map { prettyName($0.display) } ?? "Choose something to print")
+                            .font(.heading).foregroundStyle(Ink.bone).lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").foregroundStyle(Ink.faint)
+                }
+                .padding(14)
+                .background(Ink.panelHi, in: .rect(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(PressStyle())
+        }
+        .panel(padding: 18)
+    }
+}
+
+private struct FinishedCard: View {
+    let outcome: Outcome
+    let dismiss: () -> Void
+
+    var body: some View {
+        let done = outcome.kind == .done
+        VStack(alignment: .leading, spacing: 10) {
+            Text(done ? "Finished" : outcome.kind == .failed ? "Failed" : "Cancelled")
+                .font(.heroWord)
+                .foregroundStyle(done ? Ink.ok : outcome.kind == .failed ? Ink.bad : Ink.bone)
+            if !outcome.fileName.isEmpty {
+                Text(prettyName(outcome.fileName)).font(.title).foregroundStyle(Ink.bone).lineLimit(2)
+            }
+            Text(done
+                 ? (outcome.seconds.map { "Took \(duration($0)). Clear the bed before the next one." } ?? "Clear the bed before the next one.")
+                 : "Check the printer before trying again.")
+                .font(.body).foregroundStyle(Ink.soft)
+            Button(action: dismiss) { Label(done ? "Bed is clear" : "Done", systemImage: "checkmark") }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.top, 6)
+        }
+        .panel(padding: 18)
+        .sensoryFeedback(.success, trigger: outcome)
+    }
+}
+
+private struct OfflineCard: View {
+    let printer: PrinterSnapshot
+    let connect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(printer.phase == .error ? "Printer error" : "Printer offline")
+                .font(.heroWord).foregroundStyle(printer.phase == .error ? Ink.bad : Ink.bone)
+            Text(printer.errorText ?? (printer.phase == .error ? printer.stateText : "OctoPrint isn't connected to the printer."))
+                .font(.body).foregroundStyle(Ink.soft)
+            Button(action: connect) { Label("Connect printer", systemImage: "cable.connector") }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.top, 6)
+        }
+        .panel(padding: 18)
+    }
+}
+
+/* ---------------- the picture ---------------- */
+
+/// The part or the camera, with its buttons laid over the top-left corner (the part drawing
+/// keeps the top-right one for its turn button).
+private struct PicturePanel: View {
+    let session: PrinterSession
+    let expand: () -> Void
+    @Environment(Prefs.self) private var prefs
+
+    var body: some View {
         let cam = session.info.webcam
         let showCamera = prefs.showCamera && cam != nil
-        // top-left: the part drawing keeps the top-right corner for its turn button
         ZStack(alignment: .topLeading) {
             Group {
                 if showCamera, let cam {
@@ -48,187 +288,94 @@ struct StatusView: View {
                 }
             }
             .aspectRatio(4 / 3, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .clipShape(.rect(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Ink.line.opacity(0.55), lineWidth: 0.5))
 
-            if cam != nil {
-                HStack(spacing: 6) {
-                    if showCamera, let light = session.info.lights.first {
-                        PanelToggle(systemImage: light.percent > 0 ? "lightbulb.fill" : "lightbulb", on: light.percent > 0,
-                                    label: light.percent > 0 ? "Light off" : "Light on") {
-                            session.setLight(light, percent: light.percent > 0 ? 0 : 100)
-                        }
-                    }
-                    PanelToggle(systemImage: showCamera ? "cube.fill" : "video.fill", on: false,
+            HStack(spacing: 6) {
+                if cam != nil {
+                    PanelToggle(systemImage: showCamera ? "cube.fill" : "video.fill",
                                 label: showCamera ? "Show the part" : "Show the camera") {
                         prefs.showCamera.toggle()
                     }
                 }
-                .padding(10)
+                PanelToggle(systemImage: "arrow.up.left.and.arrow.down.right", label: "Full screen", action: expand)
+                if showCamera, let light = session.info.lights.first {
+                    PanelToggle(systemImage: light.percent > 0 ? "lightbulb.fill" : "lightbulb", on: light.percent > 0,
+                                label: light.percent > 0 ? "Light off" : "Light on") {
+                        session.setLight(light, percent: light.percent > 0 ? 0 : 100)
+                    }
+                }
             }
+            .padding(10)
         }
     }
+}
 
-    /* ---------------- how it's going ---------------- */
+/// The part or the camera, as big as the phone allows. The camera can be pinched and dragged.
+private struct FullScreenPicture: View {
+    let session: PrinterSession
+    @Environment(Prefs.self) private var prefs
+    @Environment(\.dismiss) private var dismiss
+    @State private var zoom: CGFloat = 1
+    @State private var settledZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var settledPan: CGSize = .zero
 
-    @ViewBuilder
-    private var summary: some View {
-        if let o = session.outcome, !(phase?.busy ?? false) {
-            finished(o)
-        } else if let p = session.printer, p.phase.busy {
-            printing(p)
-        } else if let p = session.printer, p.phase == .ready {
-            ready
-        } else if let p = session.printer, p.phase == .offline || p.phase == .error {
-            offline(p)
-        } else if session.link == .online {
-            HStack { ProgressView(); Text("Connecting the printer…").font(.body).foregroundStyle(Ink.soft) }.panel()
-        }
-    }
-
-    private func printing(_ p: PrinterSnapshot) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Caption(stateWord(p.phase))
-                if let left = p.printTimeLeft, p.phase != .starting {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        ForEach(Array(durationParts(left).enumerated()), id: \.offset) { _, part in
-                            Text(part.0).font(.hero).foregroundStyle(Ink.bone).monospacedDigit()
-                            Text(part.1).font(.heroUnit).foregroundStyle(Ink.soft).padding(.trailing, 6)
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Ink.black.ignoresSafeArea()
+            Group {
+                if prefs.showCamera, let cam = session.info.webcam {
+                    CameraView(session: session, webcam: cam, backdrop: Ink.black)
+                        .scaleEffect(zoom)
+                        .offset(pan)
+                        .gesture(MagnifyGesture()
+                            .onChanged { zoom = min(max(settledZoom * $0.magnification, 1), 5) }
+                            .onEnded { _ in
+                                settledZoom = zoom
+                                if zoom == 1 { withAnimation(.smooth) { pan = .zero; settledPan = .zero } }
+                            })
+                        .simultaneousGesture(DragGesture()
+                            .onChanged { v in
+                                guard zoom > 1 else { return }
+                                pan = CGSize(width: settledPan.width + v.translation.width, height: settledPan.height + v.translation.height)
+                            }
+                            .onEnded { _ in settledPan = pan })
+                        .onTapGesture(count: 2) {
+                            withAnimation(.smooth) {
+                                zoom = zoom > 1 ? 1 : 2.5
+                                settledZoom = zoom
+                                pan = .zero
+                                settledPan = .zero
+                            }
                         }
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(duration(left)) left")
-                    Text("left · done \(whenIs(Date().addingTimeInterval(TimeInterval(left))))")
-                        .font(.label).foregroundStyle(Ink.soft)
+                        .accessibilityHint("Pinch to zoom, double-tap to zoom in or out")
                 } else {
-                    Text(p.phase == .starting ? "Heating up" : "Working it out")
-                        .font(.heroWord).foregroundStyle(Ink.bone)
-                }
-                if let f = p.file {
-                    Text(prettyName(f.display)).font(.heading).foregroundStyle(Ink.bone).lineLimit(2).padding(.top, 6)
-                }
-                HStack(spacing: 10) {
-                    Text("\(Int((p.fraction * 100).rounded()))%")
-                    if session.layers.known, let l = session.layers.current, let t = session.layers.total {
-                        Text("layer \(l) of \(t)")
-                    }
-                    if let z = p.currentZ, z > 0 { Text(String(format: "Z %.2f", z)) }
-                }
-                .font(.meta).foregroundStyle(Ink.soft).monospacedDigit()
-            }
-            Spacer(minLength: 0)
-            LayerStack(fraction: p.fraction, layer: session.layers.known ? session.layers.current : nil,
-                       total: session.layers.known ? session.layers.total : nil,
-                       layerProgress: session.layers.layerProgress, filament: prefs.filament, hot: prefs.accent)
-                .frame(width: 56)
-                .padding(.top, 6)
-        }
-        .panel(padding: 18)
-    }
-
-    private var ready: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Ready").font(.heroWord).foregroundStyle(Ink.bone)
-            Text("Nothing printing.").font(.body).foregroundStyle(Ink.soft)
-            if let newest = session.files.newestFirst.first {
-                Button(action: goToFiles) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Caption("Newest upload")
-                            Text(prettyName(newest.display)).font(.heading).foregroundStyle(Ink.bone).lineLimit(1)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").foregroundStyle(Ink.faint)
-                    }
-                    .padding(14)
-                    .background(Ink.panelHi, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(PressStyle())
-            }
-        }
-        .panel(padding: 18)
-        .onAppear { session.wantFiles() }
-    }
-
-    private func finished(_ o: Outcome) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(o.kind == .done ? "Finished" : o.kind == .failed ? "Failed" : "Cancelled")
-                .font(.heroWord)
-                .foregroundStyle(o.kind == .done ? Ink.ok : o.kind == .failed ? Ink.bad : Ink.bone)
-            if !o.fileName.isEmpty {
-                Text(prettyName(o.fileName)).font(.heading).foregroundStyle(Ink.bone)
-            }
-            Text(o.kind == .done
-                 ? (o.seconds.map { "Took \(duration($0)). Clear the bed before the next one." } ?? "Clear the bed before the next one.")
-                 : "Check the printer before trying again.")
-                .font(.body).foregroundStyle(Ink.soft)
-            QuietButton(title: o.kind == .done ? "Bed is clear" : "Done", systemImage: "checkmark", color: Ink.bone) {
-                session.dismissOutcome()
-            }
-            .padding(.top, 4)
-        }
-        .panel(padding: 18)
-    }
-
-    private func offline(_ p: PrinterSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(p.phase == .error ? "Printer error" : "Printer offline").font(.heroWord).foregroundStyle(Ink.bone)
-            Text(p.errorText ?? (p.phase == .error ? p.stateText : "OctoPrint isn't connected to the printer."))
-                .font(.body).foregroundStyle(Ink.soft)
-            QuietButton(title: "Connect printer", systemImage: "cable.connector", color: Ink.bone) { session.connectPrinter() }
-                .padding(.top, 4)
-        }
-        .panel(padding: 18)
-    }
-
-    /* ---------------- heat ---------------- */
-
-    @ViewBuilder
-    private var heat: some View {
-        if let p = session.printer, p.tool != nil || p.bed != nil {
-            HStack(spacing: 12) {
-                HeatReading(label: "Nozzle", temp: p.tool, trace: session.temps.suffix(90).map(\.tool), color: prefs.accent)
-                if p.hasBed {
-                    HeatReading(label: "Bed", temp: p.bed, trace: session.temps.suffix(90).map(\.bed), color: Ink.bed)
+                    PartPanel(session: session)
+                        .aspectRatio(4 / 3, contentMode: .fit)
                 }
             }
-        }
-    }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
 
-    /* ---------------- pause and cancel ---------------- */
-
-    @ViewBuilder
-    private var actions: some View {
-        if let p = session.printer, p.phase.busy {
-            HStack(spacing: 12) {
-                if p.phase == .paused {
-                    QuietButton(title: "Resume", systemImage: "play.fill", color: prefs.accent) { session.resume() }
-                } else {
-                    QuietButton(title: "Pause", systemImage: "pause.fill", enabled: p.phase.canPause) { session.pause() }
-                }
-                HoldButton(title: "Hold to cancel", systemImage: "xmark", enabled: p.phase.canCancel) { session.cancel() }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Ink.bone)
+                    .frame(width: 44, height: 44)
+                    .background(.black.opacity(0.6), in: Circle())
             }
+            .padding(16)
+            .accessibilityLabel("Close")
         }
-    }
-
-    private func stateWord(_ phase: Phase) -> String {
-        switch phase {
-        case .starting: "Starting"
-        case .printing: "Printing"
-        case .pausing: "Pausing"
-        case .paused: "Paused"
-        case .resuming: "Resuming"
-        case .cancelling: "Cancelling"
-        case .finishing: "Finishing"
-        default: ""
-        }
+        .statusBarHidden()
     }
 }
 
 /// A round button laid over the picture.
 struct PanelToggle: View {
     let systemImage: String
-    let on: Bool
+    var on = false
     let label: String
     let action: () -> Void
 
@@ -237,31 +384,11 @@ struct PanelToggle: View {
             Image(systemName: systemImage)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(on ? Ink.black : Ink.bone)
-                .frame(width: 38, height: 38)
+                .frame(width: 40, height: 40)
                 .background(on ? AnyShapeStyle(Ink.warn) : AnyShapeStyle(.black.opacity(0.55)), in: Circle())
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel(label)
-    }
-}
-
-/// Home, away, or not reaching it at all.
-struct ViaBadge: View {
-    let session: PrinterSession
-    var body: some View {
-        let (text, color): (String, Color) = switch session.link {
-        case .online: (session.via == .home ? "Home" : "Away", Ink.ok)
-        case .connecting: ("Connecting", Ink.faint)
-        default: ("Offline", Ink.bad)
-        }
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text(text).font(.meta).foregroundStyle(Ink.soft)
-        }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Ink.panelHi, in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(session.link == .online ? "Connected \(session.via == .home ? "at home" : "from away")" : text)
     }
 }
 

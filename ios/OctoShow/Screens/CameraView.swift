@@ -5,12 +5,14 @@ import SwiftUI
 struct CameraView: View {
     let session: PrinterSession
     let webcam: Webcam
+    /// What shows round the picture where it doesn't fill the space: a panel in a card, black full screen.
+    var backdrop: Color = Ink.panelHi
     @State private var still: UIImage?
     @State private var failed = false
 
     var body: some View {
         ZStack {
-            Ink.panelHi
+            backdrop
             if let still {
                 Image(uiImage: still)
                     .resizable()

@@ -4,7 +4,7 @@ name: OctoShow
 options:
   bundleIdPrefix: com.drazan.octoshow
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
   createIntermediateGroups: true
   developmentLanguage: en
 settings:
@@ -22,7 +22,7 @@ targets:
   OctoShow:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "18.0"
     sources:
       - path: OctoShow
       # The same font the Echo Show display is set in, shared rather than copied.
@@ -77,7 +77,7 @@ targets:
   OctoShowTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "18.0"
     sources:
       - path: OctoShowTests
     dependencies:
