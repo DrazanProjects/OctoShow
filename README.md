@@ -162,6 +162,14 @@ on, within its first three minutes. So the Echo Show's own button is the master
 switch: hold it to start the display, and the printer and the Pi come up with it. A
 display that was left on shows a **Switch on** button instead.
 
+## On your iPhone too
+
+`ios/` holds an iPhone app built on the same lines: status with the part drawn as it is
+printed, the camera, files, controls and the printer's questions, with its own key and the
+same pinned certificate. It can reach the printer away from home over a VPN such as
+Tailscale, a Cloudflare Tunnel or a relay, and alerts you through ntfy when a print finishes,
+fails or pauses. Switching off stays with the display. See [ios/README.md](ios/README.md).
+
 ## Putting it on the Echo Show
 
 The commands on this page are written for the Windows command prompt. In PowerShell

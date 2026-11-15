@@ -12,3 +12,10 @@ local.properties
 # mock OctoPrint: dependencies and its throwaway localhost certificate
 tools/mock-octoprint/node_modules/
 *.pem
+
+# iPhone app: the Xcode project and Info.plist are generated from ios/project.yml by XcodeGen
+ios/*.xcodeproj/
+ios/OctoShow/Info.plist
+ios/Packages/*/.build/
+ios/Packages/*/.swiftpm/
+xcuserdata/
