@@ -77,8 +77,8 @@ final class OctoApi: @unchecked Sendable {
     /// Whether this server hands out app keys on request, and where it really lives: a Pi that
     /// redirects http to https answers from a different base than the one asked. Nil when
     /// something answered but it wasn't OctoPrint offering keys.
-    func keyOffice() async throws -> URL? {
-        let (_, r) = try await raw(request(url("plugin/appkeys/probe"), timeout: 6))
+    func keyOffice(timeout: TimeInterval = 6) async throws -> URL? {
+        let (_, r) = try await raw(request(url("plugin/appkeys/probe"), timeout: timeout))
         guard r.statusCode == 204 else { return nil }
         return landedBase(r, asked: "plugin/appkeys/probe")
     }

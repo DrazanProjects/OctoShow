@@ -64,13 +64,37 @@ final class AppModel {
     func startDiscovery() {
         if discovery == nil {
             let d = Discovery()
-            d.onFound = { [weak self] f in
-                guard let self, !self.found.contains(where: { $0.address == f.address }) else { return }
+            d.onFound = { [weak self] name, host, port in
+                guard let self else { return }
+                let f = FoundServer(name: name, host: host, announcedPort: port)
+                guard !self.found.contains(where: { $0.id == f.id }) else { return }
                 self.found.append(f)
+                Task { await self.check(f) }
             }
             discovery = d
         }
         discovery?.start()
+    }
+
+    /// Where a found OctoPrint really answers: on the port it announced, or failing that on
+    /// OctoPrint's usual ones. Each over https first, as at setup.
+    private func check(_ f: FoundServer) async {
+        var answer: String?
+        search: for port in discoveryPorts(announced: f.announcedPort) {
+            // OctoPrint announces 80 on an OctoPi whose proxy may answer only on https (443),
+            // so port 80 is given as no port at all, which tries both.
+            let address = port == 80 ? f.host : "\(f.host):\(port)"
+            for base in candidates(for: address, announced: true) {
+                if Task.isCancelled { return }
+                if let home = try? await OctoApi(route: Route(base: base), apiKey: nil, learning: true).keyOffice(timeout: 3) {
+                    answer = home.absoluteString
+                    break search
+                }
+            }
+        }
+        guard let i = found.firstIndex(where: { $0.id == f.id }) else { return }
+        found[i].address = answer
+        found[i].state = answer == nil ? .silent : .ready
     }
 
     func stopDiscovery() {

@@ -22,7 +22,7 @@ struct StatusView: View {
             }
             .refreshable { session.reconnectNow() }
             .background(Ink.black)
-            .navigationTitle(session.info.name.isEmpty ? session.server.name : session.info.name)
+            .navigationTitle(session.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { ViaBadge(session: session) }

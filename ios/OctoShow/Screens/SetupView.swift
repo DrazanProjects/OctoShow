@@ -62,21 +62,44 @@ struct SetupView: View {
             }
             ForEach(model.found) { f in
                 Button {
-                    model.requestAccess(f.address, name: f.name, announced: true)
+                    // the address that answered, scheme and port included, so setup goes straight there
+                    if let address = f.address { model.requestAccess(address, name: f.name) }
                 } label: {
                     HStack(spacing: 14) {
-                        Image(systemName: "printer.fill").font(.title3).foregroundStyle(.tint)
+                        Image(systemName: "printer.fill").font(.title3)
+                            .foregroundStyle(f.state == .silent ? AnyShapeStyle(Ink.faint) : AnyShapeStyle(.tint))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(f.name).font(.heading).foregroundStyle(Ink.bone)
-                            Text(f.address).font(.meta).foregroundStyle(Ink.soft)
+                            Text(detail(f)).font(.meta).foregroundStyle(f.state == .silent ? Ink.warn : Ink.soft)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
-                        Image(systemName: "chevron.right").foregroundStyle(Ink.faint)
+                        switch f.state {
+                        case .checking: ProgressView().controlSize(.small)
+                        case .ready: Image(systemName: "chevron.right").foregroundStyle(Ink.faint)
+                        case .silent: EmptyView()
+                        }
                     }
                     .panel()
                 }
                 .buttonStyle(PressStyle())
+                .disabled(f.state != .ready)
+                .accessibilityHint(f.state == .ready ? "Asks this OctoPrint for access" : "")
             }
+        }
+    }
+
+    /// Where a found OctoPrint is, or why it can't be used from the list.
+    private func detail(_ f: FoundServer) -> String {
+        switch f.state {
+        case .checking:
+            return "\(f.host) · checking…"
+        case .ready:
+            guard let u = f.address.flatMap({ URL(string: $0) }) else { return f.host }
+            let place = u.port.map { "\(u.host ?? f.host):\($0)" } ?? (u.host ?? f.host)
+            return "\(place) · \(u.scheme == "https" ? "https" : "http, unencrypted")"
+        case .silent:
+            return "It announces port \(f.announcedPort), but nothing answers there or on OctoPrint's usual ports. Type the address you open OctoPrint at below."
         }
     }
 

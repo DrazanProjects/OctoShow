@@ -282,7 +282,7 @@ final class PrinterSession {
         guard let version = try? await octo.version(), let settings = try? await octo.settings() else { return false }
         let lights = Self.readLights(settings)
         info = ServerInfo(
-            name: settings.obj("appearance")?.str("name").flatMap { $0.isEmpty ? nil : $0 } ?? server.name,
+            name: settings.obj("appearance")?.str("name").flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 } ?? "",
             version: version,
             presets: Self.readPresets(settings),
             webcam: Self.readWebcam(settings),
@@ -493,6 +493,14 @@ extension PartFile {
 }
 
 extension PrinterSession {
+    /// What to call the printer: the name set in OctoPrint's appearance settings, else the one
+    /// it announced itself with, else just "OctoPrint" (an address makes a poor title).
+    var displayName: String {
+        if !info.name.isEmpty { return info.name }
+        let n = server.name.trimmingCharacters(in: .whitespaces)
+        return n.isEmpty || n == server.home.host || normalizeBase(n)?.host == server.home.host ? "OctoPrint" : n
+    }
+
     /// Whether previews may be drawn now: the printer is free (a running job has the Pi to
     /// itself) and the phone is at home.
     var mayDrawPreviews: Bool { link == .online && via == .home && printer?.phase.busy == false }

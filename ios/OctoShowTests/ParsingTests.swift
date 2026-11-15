@@ -145,3 +145,18 @@ final class AlertsConfigTests: XCTestCase {
         XCTAssertEqual(lines.filter { $0.hasPrefix("  - event: ") }.count, 4, "list entries sit under subscriptions:")
     }
 }
+
+final class DiscoveryTests: XCTestCase {
+    func testLooksOnTheAnnouncedPortFirstThenOctoPrintsUsualOnes() {
+        // an OctoPrint announcing 80 while it serves on 5001, as one seen in the wild does
+        XCTAssertEqual(discoveryPorts(announced: 80), [80, 5000, 5001])
+        XCTAssertEqual(discoveryPorts(announced: 5001), [5001, 5000])
+        XCTAssertEqual(discoveryPorts(announced: 0), [5000, 5001])
+    }
+
+    func testTidiesOctoPrintsDefaultName() {
+        XCTAssertEqual(tidyServiceName("OctoPrint instance on octopi"), "octopi")
+        XCTAssertEqual(tidyServiceName("Ender 3"), "Ender 3")
+        XCTAssertEqual(tidyServiceName("OctoPrint instance on "), "OctoPrint instance on ")
+    }
+}
