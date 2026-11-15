@@ -67,6 +67,12 @@ live video, to spare mobile data and relay allowances.
 
 Never forward a port straight to OctoPrint: it isn't made to face the internet.
 
+With Tailscale on the Pi, its name (`octopi.local`, say) also stands for its Tailscale address,
+which devices that aren't on Tailscale can't reach. Both OctoShow apps try the home address first,
+but other devices may pause on the Tailscale one. To have the Pi stop announcing it, add
+`deny-interfaces=tailscale0` under `[server]` in `/etc/avahi/avahi-daemon.conf` and run
+`sudo systemctl restart avahi-daemon`.
+
 ## Alerts when the app is closed
 
 iOS cuts an app's connection soon after it leaves the screen, and push notifications of the

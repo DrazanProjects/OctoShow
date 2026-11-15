@@ -282,6 +282,51 @@ internal fun assemble(records: List<MdnsRecord>): List<FoundServer> {
         }
 }
 
+/** A network this device is on: an address of one of its interfaces, and how many bits make the network. */
+class LocalNet(val address: InetAddress, val prefix: Int)
+
+/** The IPv4 networks this device's interfaces are on, as they stand now. */
+fun localNets(): List<LocalNet> = runCatching {
+    NetworkInterface.getNetworkInterfaces().asSequence()
+        .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
+        .flatMap { it.interfaceAddresses.asSequence() }
+        .filter { it.address is Inet4Address }
+        .map { LocalNet(it.address, it.networkPrefixLength.toInt()) }
+        .toList()
+}.getOrDefault(emptyList())
+
+/**
+ * The addresses a name stands for, the likeliest to answer first. A Pi on a VPN such as
+ * Tailscale announces its VPN address under its name as well as its home one, and a display
+ * that isn't on the VPN can't reach the first: it would wait out a connection timeout on it
+ * before trying the next, every time. So addresses on one of this device's own networks come
+ * first, then other private ones, and the shared range VPNs use (100.64.0.0/10) and link-local
+ * ones last. The order is otherwise kept.
+ */
+fun likeliestFirst(addresses: List<InetAddress>, nets: List<LocalNet>): List<InetAddress> =
+    addresses.withIndex().sortedWith(compareBy({ reach(it.value, nets) }, { it.index })).map { it.value }
+
+private fun reach(address: InetAddress, nets: List<LocalNet>): Int {
+    if (address !is Inet4Address) return 2
+    val a = address.address
+    val first = a[0].toInt() and 0xFF
+    val second = a[1].toInt() and 0xFF
+    return when {
+        nets.any { sameNet(address, it) } -> 0
+        first == 100 && second in 64..127 -> 3   // shared address space: Tailscale, carrier NAT
+        first == 169 && second == 254 -> 3        // link-local
+        else -> 1
+    }
+}
+
+private fun sameNet(address: Inet4Address, net: LocalNet): Boolean {
+    val other = net.address as? Inet4Address ?: return false
+    if (net.prefix !in 1..32) return false
+    fun bits(x: Inet4Address) = x.address.fold(0L) { acc, b -> (acc shl 8) or (b.toLong() and 0xFF) }
+    val mask = (0xFFFFFFFFL shl (32 - net.prefix)) and 0xFFFFFFFFL
+    return bits(address) and mask == bits(other) and mask
+}
+
 /** IPv4 addresses for a .local name, asked for up to three times. Empty if nobody answers. */
 fun resolveLocal(host: String): List<InetAddress> {
     val name = host.trimEnd('.').lowercase()
@@ -317,7 +362,7 @@ class LocalDns(
         val cached = cache[name]
         if (cached != null && System.currentTimeMillis() - cached.at < FRESH_MILLIS) return cached.addresses
 
-        val fresh = resolveLocal(name)
+        val fresh = likeliestFirst(resolveLocal(name), localNets())
         if (fresh.isNotEmpty()) {
             cache[name] = Entry(fresh, System.currentTimeMillis())
             fresh.first().hostAddress?.let { remember(name, it) }

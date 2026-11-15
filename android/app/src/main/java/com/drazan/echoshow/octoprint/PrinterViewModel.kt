@@ -1004,8 +1004,14 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 override suspend fun shutDownPi() = octo.shutDownSystem()
                 override suspend fun piAnswers(): Boolean = withContext(Dispatchers.IO) {
-                    val address = pi ?: runCatching { dns.lookup(octo.base.host).first() }.getOrNull()?.also { pi = it }
-                    address != null && stillAnswers(address, octo.base.port)
+                    pi?.let { return@withContext stillAnswers(it, octo.base.port) }
+                    // The Pi's name can stand for more than one address: a VPN such as Tailscale
+                    // adds one of its own, which this display can't reach. The first that answers
+                    // is the one watched from then on, so its silence means the Pi has gone.
+                    val addresses = runCatching { dns.lookup(octo.base.host) }.getOrDefault(emptyList())
+                    val answering = addresses.firstOrNull { stillAnswers(it, octo.base.port) }
+                    pi = answering
+                    answering != null
                 }
                 override suspend fun plugAnswers() = attempt { plug.isOn() } != null
                 override suspend fun cutPower() {
