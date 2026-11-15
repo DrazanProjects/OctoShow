@@ -187,3 +187,62 @@ extension Dictionary where Key == String, Value == Any {
     func obj(_ key: String) -> JSON? { self[key] as? JSON }
     func arr(_ key: String) -> [Any]? { self[key] as? [Any] }
 }
+
+/* ---------------- the Echo Show, through the OctoShow plugin ---------------- */
+
+/// How far a switch-off run by the Echo Show display has got. See octoprint-plugin/README.md.
+struct PowerStepInfo: Equatable {
+    enum Kind: String {
+        case confirm, afterPrint, cooling, shuttingDown, settling, off, failed
+    }
+    var kind: Kind
+    var seconds: Int?
+    var nozzle: Int?
+    var message: String?
+
+    init(kind: Kind, seconds: Int? = nil, nozzle: Int? = nil, message: String? = nil) {
+        self.kind = kind
+        self.seconds = seconds
+        self.nozzle = nozzle
+        self.message = message
+    }
+
+    init?(_ o: JSON?) {
+        guard let o, let kind = o.str("kind").flatMap(Kind.init(rawValue:)) else { return nil }
+        self.init(kind: kind, seconds: o.int("seconds"), nozzle: o.int("nozzle"), message: o.str("message"))
+    }
+
+    /// Past the point of no return: OctoPrint has been told to shut the Pi down.
+    var committed: Bool { [.shuttingDown, .settling, .off].contains(kind) }
+    /// Still early enough for "leave everything on" to stop it.
+    var canBackOut: Bool { [.confirm, .afterPrint, .cooling, .failed].contains(kind) }
+}
+
+/// What the Echo Show display last said about itself through the OctoShow plugin.
+struct DisplayStatus: Equatable {
+    var name: String
+    /// A smart plug is set up on the display: without one it has nothing to switch off with.
+    var plug: Bool
+    var plugOn: Bool?
+    /// The display switches itself off too at the end.
+    var canGoOff: Bool
+    var offWhenDone: Bool
+    var step: PowerStepInfo?
+    /// When it said so.
+    var heard: Date
+
+    init?(_ o: JSON?, now: Date = Date()) {
+        guard let o else { return nil }
+        name = o.str("name").flatMap { $0.isEmpty ? nil : $0 } ?? "Echo Show"
+        plug = o.bool("plug") ?? false
+        plugOn = o.bool("plugOn")
+        canGoOff = o.bool("canGoOff") ?? false
+        offWhenDone = o.bool("offWhenDone") ?? false
+        step = PowerStepInfo(o.obj("step"))
+        heard = now.addingTimeInterval(-(o.dbl("age") ?? 0))
+    }
+
+    /// A display that hasn't reported for this long may have gone; the plugin reckons the same.
+    static let freshFor: TimeInterval = 90
+    func fresh(at now: Date = Date()) -> Bool { now.timeIntervalSince(heard) <= Self.freshFor }
+}

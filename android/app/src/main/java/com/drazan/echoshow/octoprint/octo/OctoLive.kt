@@ -16,6 +16,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import com.drazan.echoshow.octoprint.power.RemoteAsk
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -37,6 +38,8 @@ sealed interface LiveEvent {
     data object PrintStarted : LiveEvent
     /** A light was switched somewhere else. */
     data class LightChanged(val pin: Int, val percent: Int) : LiveEvent
+    /** The phone asking, through the OctoShow plugin, for everything to be switched off (or not). */
+    data class Remote(val ask: RemoteAsk) : LiveEvent
 }
 
 /**
@@ -265,6 +268,10 @@ class OctoLive(private val api: OctoApi) {
                 "show" -> Prompt(data.str("text").orEmpty(), data.optJSONArray("choices").strings())
                 else -> null
             }
+            // what displays report about themselves comes this way too, and is the phone's business
+            "octoshow" -> if (data.str("type") == "request") {
+                RemoteAsk.of(data.str("action"))?.let { events.tryEmit(LiveEvent.Remote(it)) }
+            }
         }
     }
 
@@ -296,7 +303,7 @@ class OctoLive(private val api: OctoApi) {
                     // OctoPrint takes text here as a pattern, and sends only the log lines it fits
                     .put("state", JSONObject().put("logs", NOZZLE_MARK).put("messages", false))
                     .put("events", true)
-                    .put("plugins", JSONArray(listOf("dashboard", "LightControls", "action_command_prompt"))),
+                    .put("plugins", JSONArray(listOf("dashboard", "LightControls", "action_command_prompt", "octoshow"))),
             )
             .toString()
         const val RETRY_MS = 4_000L

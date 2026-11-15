@@ -53,6 +53,9 @@ import com.drazan.echoshow.octoprint.power.Plug
 import com.drazan.echoshow.octoprint.power.PowerOff
 import com.drazan.echoshow.octoprint.power.PowerRig
 import com.drazan.echoshow.octoprint.power.PowerStep
+import com.drazan.echoshow.octoprint.power.RemoteAsk
+import com.drazan.echoshow.octoprint.power.RemoteStatus
+import com.drazan.echoshow.octoprint.power.forRemote
 import com.drazan.echoshow.octoprint.power.SelfPower
 import com.drazan.echoshow.octoprint.power.stillAnswers
 import kotlinx.coroutines.CancellationException
@@ -348,6 +351,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         launch { live.temps.collect { temps = it } }
         launch { live.prompt.collect { prompt = it } }
         launch { live.events.collect { onEvent(it) } }
+        launch { reportToPhones(octo) }
         launch {
             live.fixes.collect {
                 nozzle.add(it, SystemClock.elapsedRealtime())
@@ -453,6 +457,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
             is LiveEvent.LightChanged -> info = info.copy(
                 lights = info.lights.map { if (it.pin == e.pin) it.copy(percent = e.percent) else it }
             )
+            is LiveEvent.Remote -> onRemote(e.ask)
         }
     }
 
@@ -893,6 +898,74 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * The phone asking, through the OctoShow plugin. The same as the power button here, minus the
+     * hold, which the phone has had already: what would be refused here is refused, and says so
+     * on this screen and, through [reportToPhones], on the phone.
+     */
+    private fun onRemote(ask: RemoteAsk) {
+        when (ask) {
+            RemoteAsk.OFF -> when {
+                plug == null -> Unit   // nothing to switch off with; the phone isn't offered the button
+                printer?.phase?.busy == true -> power = PowerStep.Failed("A print is running, so everything was left on.")
+                power == null || power == PowerStep.Confirm || power is PowerStep.Failed -> {
+                    power = null
+                    switchOff()
+                }
+                else -> Unit           // already on its way
+            }
+            RemoteAsk.OFF_WHEN_DONE -> if (!offWhenDone) switchOffWhenDone(true)
+            RemoteAsk.STAY -> {
+                if (offWhenDone) switchOffWhenDone(false)
+                if (power != null) dismissPower()
+            }
+        }
+    }
+
+    /**
+     * Tells the OctoShow plugin, when OctoPrint has it, what this display is and how a switch-off
+     * stands, so the phone can offer its power button and follow along. Straight away whenever
+     * any of that changes, and every half-minute besides, which is how the plugin knows a display
+     * is still listening. Without the plugin OctoPrint answers 404, and this asks again much later.
+     */
+    private suspend fun reportToPhones(octo: OctoApi) {
+        snapshotFlow {
+            if (link != Link.Online) null
+            else RemoteStatus(
+                name = DISPLAY_NAME,
+                plug = plug != null,
+                plugOn = plugOn,
+                canGoOff = displayCanGoOff,
+                offWhenDone = offWhenDone,
+                step = power.forRemote(),
+            )
+        }.collectLatest { status ->
+            if (status == null) return@collectLatest
+            while (true) {
+                val wait = try {
+                    octo.send("api/plugin/octoshow", status.json())
+                    REPORT_EVERY_MS
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: OctoHttpException) {
+                    if (e.code == 404) NO_PLUGIN_ASK_AGAIN_MS else REPORT_EVERY_MS
+                } catch (_: Exception) {
+                    REPORT_EVERY_MS
+                }
+                delay(wait)
+            }
+        }
+    }
+
+    private fun RemoteStatus.json(): JSONObject = JSONObject()
+        .put("command", "status")
+        .put("name", name)
+        .put("plug", plug)
+        .put("plugOn", plugOn ?: JSONObject.NULL)
+        .put("canGoOff", canGoOff)
+        .put("offWhenDone", offWhenDone)
+        .put("step", step?.let { JSONObject(it) } ?: JSONObject.NULL)
+
     /** Put the question; nothing happens until [switchOff]. */
     fun askSwitchOff() {
         if (plug == null || power != null || printer?.phase?.busy == true) return
@@ -1205,5 +1278,11 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         const val DISPLAY_OFF_GRACE_MS = 20_000L
         /** A Pi 3 takes a minute or two from power to OctoPrint answering. */
         const val STARTUP_MS = 240_000L
+        /** How often this display tells the OctoShow plugin it is still there. */
+        const val REPORT_EVERY_MS = 30_000L
+        /** And how long it leaves an OctoPrint without the plugin before asking again. */
+        const val NO_PLUGIN_ASK_AGAIN_MS = 10 * 60_000L
+        /** What the phone calls this display: "Echo Show 5", say. */
+        val DISPLAY_NAME: String = android.os.Build.MODEL.orEmpty().replace('_', ' ').ifBlank { "Echo Show" }
     }
 }

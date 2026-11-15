@@ -59,6 +59,10 @@ final class PrinterSession {
     /// Feed and flow overrides are not reported back by OctoPrint, so remember what we set.
     private(set) var feedRate = 100
     private(set) var flowRate = 100
+    /// The Echo Show display, as it last reported through the OctoShow plugin: nil when OctoPrint
+    /// hasn't the plugin, or no display has reported lately. Kept after OctoPrint goes quiet when
+    /// the display was switching everything off, so the phone can say that is why.
+    private(set) var display: DisplayStatus?
     /// Where the nozzle really is, when the firmware says (REALPOS): the part drawing follows it.
     let nozzle = NozzleWatch()
     /// The parts this phone draws from G-code: the job's, as it is printed, and previews for
@@ -76,6 +80,7 @@ final class PrinterSession {
     }
 
     private var loop: Task<Void, Never>?
+    private var freshness: Task<Void, Never>?
     private var listening: Task<Void, Error>?
     private var filesTask: Task<Void, Never>?
     private var jobFileTask: Task<Void, Never>?
@@ -107,6 +112,14 @@ final class PrinterSession {
     func start() {
         guard loop == nil else { return }
         loop = Task { await run() }
+        // A display that stops reporting has gone (switched off, or lost its connection): stop
+        // offering its power button. One that went quiet while switching off is kept, to say so.
+        freshness = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if let d = display, !d.fresh(), d.step?.committed != true { display = nil }
+            }
+        }
         // Going from Wi‑Fi to mobile data, or back, changes which route works: start over.
         paths.pathUpdateHandler = { [weak self] path in
             let key = "\(path.status)-\(path.availableInterfaces.map(\.name).joined(separator: ","))"
@@ -121,6 +134,7 @@ final class PrinterSession {
 
     func stop() {
         loop?.cancel()
+        freshness?.cancel()
         listening?.cancel()
         paths.cancel()
         filesTask?.cancel()
@@ -189,6 +203,7 @@ final class PrinterSession {
         case .prompt(let p): prompt = p
         case .event(let e): onEvent(e)
         case .nozzle(let lines): for line in lines { _ = nozzle.add(line: line) }
+        case .display(let d): display = d
         }
     }
 
@@ -199,6 +214,8 @@ final class PrinterSession {
         infoTask = Task {
             // a prompt raised while the phone was away is still waiting
             if let p = await octo.activePrompt() { prompt = p }
+            // whether an Echo Show is listening, to offer its power button; it reports by itself after this
+            if let answer = await octo.displayStatus() { display = answer } else { display = nil }
             // A Pi that has only just booted can be slow or half-ready. Without its settings
             // there is no camera, presets or lights, so keep asking.
             var wait: Duration = .seconds(2)
@@ -462,6 +479,30 @@ final class PrinterSession {
     func answerPrompt(_ choice: Int) {
         prompt = nil
         act { try await $0.answerPrompt(choice) }
+    }
+
+    /// Whether to offer switching everything off: an Echo Show with a smart plug is listening, or
+    /// is part-way through switching off.
+    var canSwitchOff: Bool {
+        guard let d = display else { return false }
+        return d.step != nil || (d.plug && d.fresh() && link == .online)
+    }
+
+    /// Ask the Echo Show, through the OctoShow plugin, to switch everything off (`off`), to do so
+    /// when the print is done (`offWhenDone`), or to leave everything on (`stay`). It decides; this
+    /// only asks, and its answer arrives as its next report.
+    func askDisplay(_ action: String) {
+        guard let octo = api else { return say("Not connected to OctoPrint.") }
+        Task {
+            do {
+                try await octo.askDisplay(action)
+            } catch let e as OctoHttpError where e.code == 409 {
+                display = nil
+                say("The Echo Show isn't listening just now.")
+            } catch {
+                say(forPeople(error))
+            }
+        }
     }
 
     func setLight(_ light: Light, percent: Int) {

@@ -10,9 +10,12 @@ It has an application key of its own, one push connection to OctoPrint, and the 
 self-signed certificate pinned at setup. What OctoPrint needs, and what the optional plugins
 add, is on the repository's [front page](../README.md#what-you-need).
 
-What the phone doesn't do: switch the printer and the Pi off through a smart plug. That
+Switching the printer and the Pi off through a smart plug is the Echo Show display's job: the
 sequence can take twenty minutes of waiting for the nozzle to cool, and iOS stops an app long
-before that once it leaves the screen, so it stays with the Echo Show display.
+before that once it leaves the screen. With the display and the small
+[OctoShow plugin](../octoprint-plugin/README.md) in OctoPrint, the phone can ask the display to do
+it, now or when the print is done, and follow along. The power button appears beside the
+connection on the status screen only while a display with a plug is listening.
 
 ## Putting it on your iPhone
 
@@ -88,6 +91,9 @@ node server.js 5001
 In the Simulator, set up with the address `127.0.0.1:5444` (its https port, with a self-signed
 certificate like a Pi's). `http://127.0.0.1:5001/mock/set?scene=printing` and the rest of the
 scenes listed at the top of `server.js` put the printer into any state.
+
+Add `&echoshow=1` to a scene for an Echo Show listening through the plugin: the mock plays the
+whole switch-off when the phone asks, ending with OctoPrint going quiet as a real Pi does.
 
 The tests run on the Simulator; those that need the mock are skipped when it isn't running:
 

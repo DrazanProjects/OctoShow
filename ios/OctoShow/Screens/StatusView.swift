@@ -9,6 +9,7 @@ struct StatusView: View {
     @Environment(Prefs.self) private var prefs
     @Environment(\.dynamicTypeSize) private var textSize
     @State private var fullScreen = false
+    @State private var powerSheet = false
 
     private var phase: Phase? { session.printer?.phase }
     private var busy: Bool { phase?.busy == true }
@@ -16,8 +17,10 @@ struct StatusView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                ScreenHeader(title: session.displayName, subtitle: subtitle, session: session)
+                ScreenHeader(title: session.displayName, subtitle: subtitle, session: session,
+                             power: session.canSwitchOff ? { powerSheet = true } : nil)
                 LinkBanner(session: session)
+                switchingOff
                 PicturePanel(session: session, expand: { fullScreen = true })
                 summary
                     .animation(.smooth, value: phase)
@@ -39,10 +42,34 @@ struct StatusView: View {
         .fullScreenCover(isPresented: $fullScreen) {
             FullScreenPicture(session: session)
         }
+        .sheet(isPresented: $powerSheet) { PowerSheet(session: session) }
+    }
+
+    /// The Echo Show switching everything off, or set to once the print is done.
+    @ViewBuilder
+    private var switchingOff: some View {
+        if let step = session.display?.step {
+            Button { powerSheet = true } label: { PowerStepCard(step: step, link: session.link) }
+                .buttonStyle(PressStyle())
+                .transition(.move(edge: .top).combined(with: .opacity))
+        } else if session.display?.offWhenDone == true, busy {
+            Button { powerSheet = true } label: {
+                Label("Everything switches off when this print is done", systemImage: "power")
+                    .font(.label).foregroundStyle(Ink.bone)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Ink.panel, in: .rect(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Ink.line.opacity(0.55), lineWidth: 0.5))
+            }
+            .buttonStyle(PressStyle())
+        }
     }
 
     /// What the printer is doing, in a few words, under the printer's name.
     private var subtitle: String? {
+        if let step = session.display?.step, step.kind != .failed {
+            return step.kind == .off ? "Switched off" : "Switching off"
+        }
         guard session.link == .online, let p = session.printer else { return nil }
         switch p.phase {
         case .printing: return "Printing · \(Int((p.fraction * 100).rounded()))%"
@@ -399,6 +426,9 @@ struct LinkBanner: View {
 
     var body: some View {
         switch session.link {
+        case .unreachable where session.display?.step?.committed == true:
+            // gone quiet because the Echo Show is switching everything off: its card says so
+            EmptyView()
         case .unreachable:
             banner("Can’t reach OctoPrint", session.server.away == nil
                    ? "Check the Pi is on. Away from home, set up an away address in Settings."

@@ -29,6 +29,8 @@ enum LiveUpdate {
     case event(LiveEvent)
     /// Lines of the terminal log carrying the nozzle's real position (REALPOS).
     case nozzle([String])
+    /// What the Echo Show display says about itself, through the OctoShow plugin.
+    case display(DisplayStatus)
 }
 
 /// What the firmware starts each reading of the nozzle's real position with.
@@ -235,6 +237,9 @@ final class OctoLive: @unchecked Sendable {
             } else {
                 await send(.prompt(nil))
             }
+        case "octoshow":
+            // the phone's own requests come back this way too, and are the display's business
+            if data.str("type") == "display", let d = DisplayStatus(data.obj("display")) { await send(.display(d)) }
         default: break
         }
     }
@@ -261,7 +266,7 @@ final class OctoLive: @unchecked Sendable {
                 // OctoPrint takes text here as a pattern, and sends only the log lines it fits
                 "state": ["logs": nozzleMark, "messages": false],
                 "events": true,
-                "plugins": ["dashboard", "LightControls", "action_command_prompt"],
+                "plugins": ["dashboard", "LightControls", "action_command_prompt", "octoshow"],
             ] as JSON,
         ]
         return String(decoding: try! JSONSerialization.data(withJSONObject: o), as: UTF8.self)

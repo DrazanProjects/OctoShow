@@ -157,6 +157,12 @@ finishes there is a 30-second pause, with a button to leave everything on, and t
 the sequence above runs. A print that is cancelled or fails leaves everything on,
 and so does restarting the app, which forgets the request.
 
+The iPhone app can ask for the same thing, now or when the print is done, at home or away,
+once the [OctoShow plugin](../octoprint-plugin/README.md) is in OctoPrint. The phone's request
+goes through OctoPrint to the display, which runs this same sequence and refuses what it would
+refuse here; its progress shows on both screens. The display tells the plugin about itself every
+half-minute, which is how the phone knows to offer its power button.
+
 Going the other way, an Echo Show that is started and finds the plug off switches it
 on, within its first three minutes. So the Echo Show's own button is the master
 switch: hold it to start the display, and the printer and the Pi come up with it. A

@@ -359,20 +359,34 @@ struct ScreenHeader: View {
     let title: String
     var subtitle: String?
     let session: PrinterSession
+    /// Shown as a power button beside the connection, when switching off is on offer.
+    var power: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.screenTitle).foregroundStyle(Ink.bone).lineLimit(1).minimumScaleFactor(0.7)
                 if let subtitle {
                     Text(subtitle).font(.label).foregroundStyle(Ink.soft).lineLimit(1)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             ViaBadge(session: session)
+            if let power {
+                Button(action: power) {
+                    Image(systemName: "power")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(session.display?.step != nil ? Ink.black : Ink.bone)
+                        .frame(width: 36, height: 36)
+                        .background(session.display?.step != nil ? AnyShapeStyle(.tint) : AnyShapeStyle(Ink.panel), in: Circle())
+                        .overlay(Circle().strokeBorder(Ink.line.opacity(0.7), lineWidth: 0.5))
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel("Switch everything off")
+            }
         }
         .padding(.top, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
     }
 }

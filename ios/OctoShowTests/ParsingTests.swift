@@ -160,3 +160,28 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertEqual(tidyServiceName("OctoPrint instance on "), "OctoPrint instance on ")
     }
 }
+
+final class DisplayStatusTests: XCTestCase {
+    func testReadsWhatTheEchoShowReports() throws {
+        let now = Date()
+        let o: JSON = ["name": "Echo Show 5", "plug": true, "plugOn": NSNull(), "canGoOff": true, "offWhenDone": false,
+                       "step": ["kind": "cooling", "nozzle": 112], "age": 30]
+        let d = try XCTUnwrap(DisplayStatus(o, now: now))
+        XCTAssertEqual(d.name, "Echo Show 5")
+        XCTAssertTrue(d.plug)
+        XCTAssertNil(d.plugOn)
+        XCTAssertEqual(d.step, PowerStepInfo(kind: .cooling, nozzle: 112))
+        XCTAssertEqual(d.heard.timeIntervalSince(now), -30, accuracy: 0.01)
+        XCTAssertTrue(d.fresh(at: now))
+        XCTAssertFalse(d.fresh(at: now.addingTimeInterval(61)), "90 seconds without a report and it may have gone")
+    }
+
+    func testStepsKnowWhenTheyCanStillBeStopped() {
+        XCTAssertTrue(PowerStepInfo(kind: .cooling).canBackOut)
+        XCTAssertTrue(PowerStepInfo(kind: .afterPrint, seconds: 20).canBackOut)
+        XCTAssertFalse(PowerStepInfo(kind: .shuttingDown).canBackOut, "the Pi has been told to go")
+        XCTAssertTrue(PowerStepInfo(kind: .settling, seconds: 9).committed)
+        XCTAssertNil(PowerStepInfo(["kind": "explode"]), "an unknown step is no step")
+        XCTAssertNil(DisplayStatus(nil))
+    }
+}

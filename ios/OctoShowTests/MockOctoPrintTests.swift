@@ -6,8 +6,8 @@ import XCTest
 /// https 5444); the Simulator reaches this Mac's localhost directly. Port 5000 is left alone
 /// because macOS's AirPlay Receiver usually has it.
 final class MockOctoPrintTests: XCTestCase {
-    private let key = "MOCKKEY0123456789ABCDEF"
-    private let http = URL(string: "http://127.0.0.1:5001/")!
+    let key = "MOCKKEY0123456789ABCDEF"
+    let http = URL(string: "http://127.0.0.1:5001/")!
     private let https = URL(string: "https://127.0.0.1:5444/")!
 
     override func setUp() async throws {
@@ -67,6 +67,69 @@ final class MockOctoPrintTests: XCTestCase {
         let task = Task { try await live.listen() }
         await fulfillment(of: [got], timeout: 15)
         task.cancel()
+    }
+}
+
+extension MockOctoPrintTests {
+    /// The phone asking the Echo Show to switch off, through the OctoShow plugin, with the mock
+    /// playing the display. A print is running, so it refuses, then takes "when done" and "stay".
+    func testAskingTheEchoShowThroughThePlugin() async throws {
+        _ = try? await URLSession.shared.data(from: http.appending(path: "mock/set").appending(queryItems: [
+            URLQueryItem(name: "scene", value: "printing"), URLQueryItem(name: "echoshow", value: "1"),
+        ]))
+        let api = OctoApi(route: Route(base: http), apiKey: key)
+        let answer = await api.displayStatus()
+        let listening = try XCTUnwrap(answer, "the mock has the plugin")
+        XCTAssertEqual(listening?.plug, true)
+
+        let heard = Heard()
+        let live = OctoLive(api: api) { update in
+            if case .display(let d) = update { await heard.add(d) }
+        }
+        let task = Task { try await live.listen() }
+        defer { task.cancel() }
+        try await Task.sleep(for: .seconds(1))
+
+        try await api.askDisplay("off")
+        try await heard.waitFor { $0.step?.kind == .failed && $0.step?.message == "A print is running" }
+        try await api.askDisplay("offWhenDone")
+        try await heard.waitFor { $0.offWhenDone }
+        try await api.askDisplay("stay")
+        try await heard.waitFor { !$0.offWhenDone && $0.step == nil }
+    }
+
+    func testNoPluginMeansNoButton() async throws {
+        _ = try? await URLSession.shared.data(from: http.appending(path: "mock/set").appending(queryItems: [
+            URLQueryItem(name: "scene", value: "ready"), URLQueryItem(name: "without", value: "octoshow"),
+        ]))
+        let answer = await OctoApi(route: Route(base: http), apiKey: key).displayStatus()
+        XCTAssertNil(answer, "an OctoPrint without the plugin")
+        _ = try? await URLSession.shared.data(from: http.appending(path: "mock/set").appending(queryItems: [
+            URLQueryItem(name: "scene", value: "ready"),
+        ]))
+        let none = await OctoApi(route: Route(base: http), apiKey: key).displayStatus()
+        XCTAssertNotNil(none, "the plugin is there")
+        XCTAssertNil(none!, "but no display has reported")
+        do {
+            try await OctoApi(route: Route(base: http), apiKey: key).askDisplay("off")
+            XCTFail("with no display listening the request should be turned down")
+        } catch let e as OctoHttpError {
+            XCTAssertEqual(e.code, 409)
+        }
+    }
+}
+
+/// What the socket has passed on from the display, waited on by a test.
+private actor Heard {
+    private var seen: [DisplayStatus] = []
+    func add(_ d: DisplayStatus) { seen.append(d) }
+    func waitFor(_ match: @Sendable (DisplayStatus) -> Bool, within: Duration = .seconds(5)) async throws {
+        let until = ContinuousClock.now + within
+        while ContinuousClock.now < until {
+            if seen.contains(where: match) { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("the display never said so; it said: \(seen.map { "\($0.offWhenDone) \(String(describing: $0.step))" })")
     }
 }
 

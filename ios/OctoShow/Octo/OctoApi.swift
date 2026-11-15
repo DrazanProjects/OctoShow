@@ -239,6 +239,23 @@ final class OctoApi: @unchecked Sendable {
         try await send("api/plugin/action_command_prompt", ["command": "select", "choice": choice])
     }
 
+    /* ---------------- the Echo Show, through the OctoShow plugin ---------------- */
+
+    /// The display listening through the OctoShow plugin: `.some(nil)` when the plugin is there
+    /// and no display has reported lately, `nil` when OctoPrint hasn't the plugin at all.
+    func displayStatus() async -> DisplayStatus?? {
+        guard let (data, r) = try? await raw(request(url("api/plugin/octoshow"))), r.statusCode == 200,
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? JSON
+        else { return nil }
+        return .some(DisplayStatus(o.obj("display")))
+    }
+
+    /// Ask the display to switch everything off (`off`), to do so once the print is done
+    /// (`offWhenDone`), or to leave everything on (`stay`). Throws 409 when no display is listening.
+    func askDisplay(_ action: String) async throws {
+        try await send("api/plugin/octoshow", ["command": "power", "action": action])
+    }
+
     /* ---------------- plumbing ---------------- */
 
     func send(_ path: String, _ body: JSON) async throws {

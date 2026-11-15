@@ -17,9 +17,12 @@ the head, feeding filament, the fan and the lights.
 | What it is | An Echo Show 5 running Android, turned into a touchscreen that lives by the printer | An app for your phone |
 | Where it works | At home, always on | At home, and away over Tailscale, a Cloudflare Tunnel or a relay |
 | Only this one | Switches the printer and the Pi off safely through a Tasmota smart plug, and back on | Alerts through ntfy when a print finishes, fails or pauses, with the app closed |
+| Together | Takes "switch off" from the phone and runs it | Asks the Echo Show to switch everything off, from home or away, with the OctoShow plugin |
 | Put on with | adb, from any computer | Xcode, on a Mac; a free Apple account will do |
 
 Neither needs the other. Each talks to OctoPrint itself, with an application key of its own.
+With both, and the small [OctoShow plugin](octoprint-plugin/README.md) in OctoPrint, the phone can
+ask the Echo Show to switch everything off, and follow along as it does.
 
 ## What you need
 
@@ -35,7 +38,8 @@ button without a camera, no light switch without lights.
 | Slicer Thumbnails plugin | the slicer's own previews in the file list | yes | yes |
 | LightControls plugin | the light switch | yes | yes |
 | A camera, as an MJPEG stream | the live view | yes | yes |
-| A Tasmota smart plug powering the printer and the Pi | switching everything off and back on | yes | |
+| A Tasmota smart plug powering the printer and the Pi | switching everything off and back on | yes | through the Echo Show |
+| The [OctoShow plugin](octoprint-plugin/README.md) | switching off from the phone, through the Echo Show | yes | yes |
 | Firmware that reports the nozzle's real position | the part drawn where the nozzle really is | yes | yes |
 
 ## What's where
@@ -44,6 +48,7 @@ button without a camera, no light switch without lights.
 android/                 the Echo Show display (Kotlin, Jetpack Compose)
 ios/                     the iPhone app (SwiftUI)
   Packages/PartKit/      drawing the part from its G-code, ported from the display
+octoprint-plugin/        the OctoShow plugin, which carries "switch off" from the phone to the display
 tools/mock-octoprint/    a stand-in OctoPrint that both apps are tested against
 docs/                    pictures for the READMEs
 ```
