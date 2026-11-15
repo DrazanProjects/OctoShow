@@ -21,3 +21,16 @@ ios/OctoShow/Info.plist
 ios/Packages/*/.build/
 ios/Packages/*/.swiftpm/
 xcuserdata/
+DerivedData/
+# your own bundle identifier and team (see ios/Signing.xcconfig)
+ios/Local.xcconfig
+
+# signing keys never belong here
+*.jks
+*.keystore
+
+# run files written by local tooling
+.scp-progress.json
+.scp-test-baseline.json
+.scp-test-results.json
+.scp-implement-errors.log

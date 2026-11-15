@@ -1,0 +1,20 @@
+// Who signs the iPhone app, and the bundle identifier it is signed as.
+//
+// Apple gives each bundle identifier to one account, and the one below is taken. To build the
+// app yourself, make a file Local.xcconfig beside this one (git leaves it out) and set your own:
+//
+//     OCTOSHOW_BUNDLE_ID = com.yourname.octoshow
+//
+// Xcode's Signing & Capabilities has you pick your team, but forgets it each time xcodegen makes
+// the project again. To have it remembered, add your team's ID to Local.xcconfig as well:
+//
+//     DEVELOPMENT_TEAM = ABCDE12345
+//
+// Once Xcode has signed the app once, this prints it, as OU=:
+//     security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+
+OCTOSHOW_BUNDLE_ID = com.drazan.octoshow
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"

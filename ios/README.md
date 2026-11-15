@@ -19,8 +19,17 @@ connection on the status screen only while a display with a plug is listening.
 
 ## Putting it on your iPhone
 
-You need a Mac with Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-(`brew install xcodegen`). The Xcode project is made from `project.yml`:
+You need a Mac with Xcode 26 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`), and an iPhone on iOS 18 or later.
+
+Apple gives each bundle identifier to one account, and the one in this repository is taken. So
+first choose your own: make a file `ios/Local.xcconfig` (git leaves it out) with one line,
+
+```
+OCTOSHOW_BUNDLE_ID = com.yourname.octoshow
+```
+
+Then make the Xcode project from `project.yml` and open it:
 
 ```
 cd ios
@@ -31,14 +40,14 @@ open OctoShow.xcodeproj
 Then, once:
 
 1. In Xcode's settings, under Accounts, sign in with your Apple ID. A free account is enough.
-2. Select the OctoShow target, then Signing & Capabilities, and pick your Personal Team. If
-   Xcode says the bundle identifier is taken, change `com.drazan.octoshow.ios` to something of
-   your own.
-3. Plug the iPhone in (or pair it over Wi‑Fi), choose it as the run destination and press Run.
-   The first time, iOS asks you to trust the developer: Settings › General › VPN & Device
-   Management.
-4. On the iPhone, switch on Developer Mode when asked (Settings › Privacy & Security), which
-   restarts it.
+2. Select the OctoShow target, then Signing & Capabilities, and pick your Personal Team. Xcode
+   forgets the team each time `xcodegen` makes the project again; to have it remembered, add
+   your team's ID to `Local.xcconfig` too. `Signing.xcconfig` says how to find it.
+3. Plug the iPhone in (or pair it over Wi‑Fi) and choose it as the run destination. Xcode asks
+   for Developer Mode: switch it on in the iPhone's Settings › Privacy & Security › Developer
+   Mode, which restarts it.
+4. Press Run. The first time, iOS won't open the app until you trust its developer: Settings ›
+   General › VPN & Device Management.
 
 **With a free account the app stops opening after seven days.** Press Run in Xcode again to
 renew it; what the app has stored is kept. A paid developer account ($99 a year) makes that a
@@ -101,7 +110,9 @@ scenes listed at the top of `server.js` put the printer into any state.
 Add `&echoshow=1` to a scene for an Echo Show listening through the plugin: the mock plays the
 whole switch-off when the phone asks, ending with OctoPrint going quiet as a real Pi does.
 
-The tests run on the Simulator; those that need the mock are skipped when it isn't running:
+The tests run on the Simulator; those that need the mock are skipped when it isn't running.
+From `ios/`, naming any iPhone simulator you have (`xcrun simctl list devices available` lists
+them):
 
 ```
 xcodebuild -project OctoShow.xcodeproj -scheme OctoShow -destination 'platform=iOS Simulator,name=iPhone 17' test
@@ -114,6 +125,7 @@ folder.
 ```
 ios/
   project.yml          the Xcode project, for XcodeGen
+  Signing.xcconfig     who signs it, and its bundle identifier
   OctoShow/
     Octo/              OctoPrint: REST, push socket, certificate pinning, discovery, camera
     App/               the app, one session per OctoPrint, preferences
