@@ -1,10 +1,12 @@
+# Echo Show app (android/): Gradle and Android Studio output, and the SDK location
 *.iml
 .gradle
 /.idea/
+/android/.idea/
 .kotlin
 .DS_Store
-/build
-/captures
+/android/build
+/android/captures
 .externalNativeBuild
 .cxx
 local.properties

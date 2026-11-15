@@ -26,7 +26,7 @@ targets:
     sources:
       - path: OctoShow
       # The same font the Echo Show display is set in, shared rather than copied.
-      - path: ../app/src/main/res/font/archivo.ttf
+      - path: ../android/app/src/main/res/font/archivo.ttf
         buildPhase: resources
     dependencies:
       - package: PartKit

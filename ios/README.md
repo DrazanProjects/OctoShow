@@ -1,18 +1,18 @@
 # OctoShow for iPhone
 
-The Echo Show display's companion for your pocket: the same OctoPrint, the same look, from
-anywhere. It shows how the print is going, draws the part layer by layer as it is printed,
-shows the camera, starts, pauses and cancels jobs, and covers heat, moving the head, feeding
-filament, the part fan and the lights.
+Your 3D printer's OctoPrint, from your phone, at home or away. It shows how the print is going,
+draws the part layer by layer as it is printed, shows the camera, starts, pauses and cancels
+jobs, and covers heat, moving the head, feeding filament, the part fan and the lights. It
+works on its own: all it needs is OctoPrint. The [Echo Show display](../android/README.md) is
+a separate app, and the two get along when you have both.
 
-It talks to OctoPrint the way the display does (an application key of its own, one push
-connection, the Pi's self-signed certificate pinned at setup), so everything in the main
-[README](../README.md) about what OctoPrint needs and what the optional plugins add applies
-here too.
+It has an application key of its own, one push connection to OctoPrint, and the Pi's
+self-signed certificate pinned at setup. What OctoPrint needs, and what the optional plugins
+add, is on the repository's [front page](../README.md#what-you-need).
 
-What the display does and the phone doesn't: the smart plug and the switch-off sequence. That
+What the phone doesn't do: switch the printer and the Pi off through a smart plug. That
 sequence can take twenty minutes of waiting for the nozzle to cool, and iOS stops an app long
-before that once it leaves the screen. It stays on the display.
+before that once it leaves the screen, so it stays with the Echo Show display.
 
 ## Putting it on your iPhone
 
@@ -76,8 +76,8 @@ opens OctoShow.
 ## Working on it
 
 Everything can be tried without a phone or a printer, against the stand-in OctoPrint in
-`tools/mock-octoprint`. Start one copy of it on 5001, since macOS usually has port 5000 for
-AirPlay:
+[`tools/mock-octoprint`](../tools/mock-octoprint). From the top of the repository, start one
+copy of it on 5001, since macOS usually has port 5000 for AirPlay:
 
 ```
 cd tools/mock-octoprint
