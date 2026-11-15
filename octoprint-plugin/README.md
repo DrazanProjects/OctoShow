@@ -22,8 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/DrazanProjects/OctoShow/main/octopr
   -o ~/.octoprint/plugins/octoshow.py
 ```
 
-That address only works once the plugin is on the `main` branch. Until then, copy the file
-across from a computer with this repository: `scp octoprint-plugin/octoshow.py pi@octopi.local:.octoprint/plugins/`.
+Or copy the file across from a computer with this repository:
+`scp octoprint-plugin/octoshow.py pi@octopi.local:.octoprint/plugins/`.
 
 Then restart OctoPrint so it picks the plugin up. **Not while a print is running**: restarting
 OctoPrint stops the print.

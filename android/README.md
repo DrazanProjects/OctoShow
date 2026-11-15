@@ -172,7 +172,8 @@ display that was left on shows a **Switch on** button instead.
 
 OctoShow also has an iPhone app, in [`ios/`](../ios/README.md). It works on its own, with
 or without this display: status with the part drawn as it is printed, the camera, files,
-controls and the printer's questions, from home or away. Switching off stays with the display.
+controls and the printer's questions, from home or away. Switching off stays with the display:
+the phone asks it to, as [above](#switching-everything-off), and follows along.
 
 ## Putting it on the Echo Show
 
@@ -392,7 +393,7 @@ gradlew :app:testDebugUnitTest --tests "*PreviewSamplesTest*"
 gradlew :app:testDebugUnitTest --tests "*RealFileSketchTest*" -Psketch=C:\path\to\file.gcode
 ```
 
-The pictures in the repository's [`docs`](../docs) came from these: the screens from the `Screenshot*Test`
+The Echo Show's pictures in the repository's [`docs`](../docs) came from these: the screens from the `Screenshot*Test`
 walks, the moving one from `SketchTest`, and the drawn previews from
 `PreviewSamplesTest`.
 

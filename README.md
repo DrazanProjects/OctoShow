@@ -10,6 +10,8 @@ infill, overhangs and supports, the top layer filling in along the nozzle's path
 pause and cancel jobs (cancel is held, never tapped), show the camera, and cover heat, moving
 the head, feeding filament, the fan and the lights.
 
+![The iPhone app: status during a print, files, controls and switching off](docs/iphone-overview.png)
+
 ## Two apps, each on its own
 
 | | [Echo Show display](android/README.md) | [iPhone](ios/README.md) |

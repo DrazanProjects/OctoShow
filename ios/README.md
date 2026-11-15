@@ -6,6 +6,8 @@ jobs, and covers heat, moving the head, feeding filament, the part fan and the l
 works on its own: all it needs is OctoPrint. The [Echo Show display](../android/README.md) is
 a separate app, and the two get along when you have both.
 
+![Status during a print, the files, moving the head, and switching off](../docs/iphone-overview.png)
+
 It has an application key of its own, one push connection to OctoPrint, and the Pi's
 self-signed certificate pinned at setup. What OctoPrint needs, and what the optional plugins
 add, is on the repository's [front page](../README.md#what-you-need).
@@ -16,6 +18,12 @@ before that once it leaves the screen. With the display and the small
 [OctoShow plugin](../octoprint-plugin/README.md) in OctoPrint, the phone can ask the display to do
 it, now or when the print is done, and follow along. The power button appears beside the
 connection on the status screen only while a display with a plug is listening.
+
+![Switching off from the phone: held, then the heaters, the Pi, the power and the Echo Show go dark in turn](../docs/iphone-switch-off.gif)
+
+The last steps happen after the Pi, and OctoPrint with it, has gone, so the phone can't hear
+them. It works the ending out from the silence instead: a minute and a half after the Pi was
+told to shut down, the power is off.
 
 ## Putting it on your iPhone
 
