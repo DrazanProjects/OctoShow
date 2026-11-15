@@ -246,3 +246,78 @@ struct DisplayStatus: Equatable {
     static let freshFor: TimeInterval = 90
     func fresh(at now: Date = Date()) -> Bool { now.timeIntervalSince(heard) <= Self.freshFor }
 }
+
+extension PowerStepInfo {
+    /// A switch-off is going: not just asked about on the display, and not stopped.
+    var underWay: Bool { [.afterPrint, .cooling, .shuttingDown, .settling, .off].contains(kind) }
+}
+
+/// How a switch-off stands as far as the phone can tell. The display's last steps happen after
+/// the Pi has shut down, and the Pi carries OctoPrint, the only way the display's word reaches the
+/// phone: so once OctoPrint has gone quiet, the ending is worked out from that silence and from
+/// how long ago the display last spoke.
+struct SwitchOffStory: Equatable {
+    enum Phase: Equatable {
+        /// Under way, and the phone is following it.
+        case running
+        /// Done: everything is off.
+        case done
+        /// OctoPrint stopped answering before the Pi was told to shut down.
+        case lostTouch
+        /// Stopped, with everything left on.
+        case failed
+    }
+    var phase: Phase
+    var title: String
+    var detail: String
+    /// How far along, out of four.
+    var progress: Int
+
+    /// After the Pi was told to go: it takes a few seconds to stop, and the display waits for half
+    /// a minute of silence before it cuts the power. Past this, the power is off.
+    static let poweredOffWithin: TimeInterval = 90
+
+    init(step: PowerStepInfo, heard: Date, online: Bool, now: Date = Date()) {
+        let at = whenIs(heard, now: now)
+        let committed = step.kind == .shuttingDown || step.kind == .settling
+        if step.kind == .failed {
+            self.init(.failed, "Left on", step.message ?? "Something stopped it, so everything was left on.", 0)
+        } else if step.kind == .off {
+            self.init(.done, "Everything is off", "The plug has cut the power to the printer and the Pi.", 4)
+        } else if committed && !online {
+            // gone quiet because the Pi has gone: how long ago tells whether the power has gone too
+            if now.timeIntervalSince(heard) >= Self.poweredOffWithin {
+                self.init(.done, "Switched off", "The Pi was shutting down at \(at), and OctoPrint hasn't answered since. The Echo Show cuts the power once the Pi has stopped, so everything has been off since a minute or so after.", 4)
+            } else {
+                self.init(.running, "Shutting down the Pi", "OctoPrint has gone quiet as the Pi shuts down, as it should. The Echo Show cuts the power once it's sure the Pi has stopped, in about a minute.", 3)
+            }
+        } else if !online {
+            let doing = switch step.kind {
+            case .afterPrint: "about to switch everything off after the print"
+            case .cooling: "letting the nozzle cool"
+            default: "waiting for its power button to be held"
+            }
+            self.init(.lostTouch, "Lost touch", "The Echo Show was \(doing) at \(at) when OctoPrint stopped answering. If it carried on, the Pi has shut down and the power is off.", 1)
+        } else {
+            switch step.kind {
+            case .confirm:
+                self.init(.running, "Waiting on the Echo Show", "Someone pressed its power button, and it's waiting for the hold that confirms it.", 0)
+            case .afterPrint:
+                self.init(.running, "Print done: switching off", "Starting in \(step.seconds ?? 0) s, unless you leave everything on.", 0)
+            case .cooling:
+                self.init(.running, "Letting the nozzle cool", "The heaters are off. The nozzle is at \(step.nozzle.map { "\($0)°" } ?? "–"); the Pi shuts down once it is below 50°.", 1)
+            case .settling:
+                self.init(.running, "The Pi has stopped", "Nothing answers at the Pi's address any more. The power goes in \(step.seconds ?? 0) s.", 3)
+            default:
+                self.init(.running, "Shutting down the Pi", "OctoPrint has been told to shut the Pi down.", 2)
+            }
+        }
+    }
+
+    private init(_ phase: Phase, _ title: String, _ detail: String, _ progress: Int) {
+        self.phase = phase
+        self.title = title
+        self.detail = detail
+        self.progress = progress
+    }
+}

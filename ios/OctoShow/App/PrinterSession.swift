@@ -60,8 +60,8 @@ final class PrinterSession {
     private(set) var feedRate = 100
     private(set) var flowRate = 100
     /// The Echo Show display, as it last reported through the OctoShow plugin: nil when OctoPrint
-    /// hasn't the plugin, or no display has reported lately. Kept after OctoPrint goes quiet when
-    /// the display was switching everything off, so the phone can say that is why.
+    /// hasn't the plugin, or no display has reported lately. Kept after OctoPrint goes quiet while
+    /// the display was switching everything off, so the phone can say how that will have ended.
     private(set) var display: DisplayStatus?
     /// Where the nozzle really is, when the firmware says (REALPOS): the part drawing follows it.
     let nozzle = NozzleWatch()
@@ -117,7 +117,7 @@ final class PrinterSession {
         freshness = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
-                if let d = display, !d.fresh(), d.step?.committed != true { display = nil }
+                if let d = display, !d.fresh(), !(d.step?.underWay == true && link != .online) { display = nil }
             }
         }
         // Going from Wi‑Fi to mobile data, or back, changes which route works: start over.

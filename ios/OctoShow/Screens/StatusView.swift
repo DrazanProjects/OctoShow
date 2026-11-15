@@ -17,8 +17,11 @@ struct StatusView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                ScreenHeader(title: session.displayName, subtitle: subtitle, session: session,
-                             power: session.canSwitchOff ? { powerSheet = true } : nil)
+                // looked at again every few seconds: a switch-off's ending is worked out from time
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    ScreenHeader(title: session.displayName, subtitle: subtitle, session: session,
+                                 power: session.canSwitchOff ? { powerSheet = true } : nil)
+                }
                 LinkBanner(session: session)
                 switchingOff
                 PicturePanel(session: session, expand: { fullScreen = true })
@@ -49,7 +52,10 @@ struct StatusView: View {
     @ViewBuilder
     private var switchingOff: some View {
         if let step = session.display?.step {
-            Button { powerSheet = true } label: { PowerStepCard(step: step, link: session.link) }
+            Button { powerSheet = true } label: {
+                PowerStepCard(step: step, heard: session.display?.heard ?? Date(), link: session.link,
+                              canGoOff: session.display?.canGoOff ?? true)
+            }
                 .buttonStyle(PressStyle())
                 .transition(.move(edge: .top).combined(with: .opacity))
         } else if session.display?.offWhenDone == true, busy {
@@ -67,8 +73,9 @@ struct StatusView: View {
 
     /// What the printer is doing, in a few words, under the printer's name.
     private var subtitle: String? {
-        if let step = session.display?.step, step.kind != .failed {
-            return step.kind == .off ? "Switched off" : "Switching off"
+        if let d = session.display, let step = d.step, step.kind != .failed {
+            let story = SwitchOffStory(step: step, heard: d.heard, online: session.link == .online)
+            return story.phase == .done ? "Switched off" : "Switching off"
         }
         guard session.link == .online, let p = session.printer else { return nil }
         switch p.phase {
@@ -426,7 +433,7 @@ struct LinkBanner: View {
 
     var body: some View {
         switch session.link {
-        case .unreachable where session.display?.step?.committed == true:
+        case .unreachable where session.display?.step?.underWay == true:
             // gone quiet because the Echo Show is switching everything off: its card says so
             EmptyView()
         case .unreachable:

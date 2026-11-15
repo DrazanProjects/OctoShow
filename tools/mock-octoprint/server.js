@@ -23,7 +23,8 @@
 // It has the OctoShow plugin (octoprint-plugin/), which carries "switch off" from the iPhone
 // app to the Echo Show display and the display's progress back. Add &echoshow=1 for an Echo Show
 // that has reported in with a smart plug, and plays the switch-off when the phone asks for one:
-// the nozzle cooling, the Pi shutting down, and then this OctoPrint going dead, as a real one does.
+// the nozzle cooling, the Pi told to shut down, and then this OctoPrint going dead, as a real one
+// does, before the display can say any more.
 // GET /mock/sent lists the requests that came through the plugin, among the rest.
 //
 // Add &without=camera,dashboard,thumbs,lights,presets,shutdown,bed,appkeys,octoshow (any of them)
@@ -279,23 +280,18 @@ function standInHears(action) {
   }
   if (S.standInRun) return;
   if (busy) return standInSays({ step: { kind: 'failed', message: 'A print is running' } });
-  // heaters off, then the nozzle cools a few degrees a tick, the Pi shuts down, and the power goes
+  // Heaters off, then the nozzle cools a few degrees a tick and the Pi is told to shut down. From
+  // there on a real display's words can't reach the phone: the Pi carries OctoPrint, and it is
+  // going. So this OctoPrint goes quiet straight after "shuttingDown", and the rest (the Pi
+  // settling, the plug cutting the power) happens out of anyone's sight, as it would.
   S.tool.target = 0; S.bed.target = 0;
-  let settle = 3;
   S.standInRun = setInterval(() => {
-    const step = d.step?.kind;
-    if (!step || step === 'failed' || step === 'cooling') {
-      S.tool.actual = Math.max(22, S.tool.actual - 18);
-      if (S.tool.actual >= 50) return standInSays({ step: { kind: 'cooling', nozzle: Math.round(S.tool.actual) } });
-      return standInSays({ step: { kind: 'shuttingDown' } });
-    }
-    if (step === 'shuttingDown') return standInSays({ step: { kind: 'settling', seconds: settle } });
-    if (step === 'settling' && --settle > 0) return standInSays({ step: { kind: 'settling', seconds: settle } });
-    // the Pi has gone: this OctoPrint stops answering, as a real one would, and the plug is off
-    standInSays({ step: { kind: 'off' }, plugOn: false });
+    S.tool.actual = Math.max(22, S.tool.actual - 18);
+    if (S.tool.actual >= 50) return standInSays({ step: { kind: 'cooling', nozzle: Math.round(S.tool.actual) } });
+    standInSays({ step: { kind: 'shuttingDown' } });
     clearInterval(S.standInRun); S.standInRun = null;
-    S.plug = false;
-    setTimeout(() => { S.dead = true; for (const ws of sockets) ws.terminate(); }, 300);
+    setTimeout(() => { S.dead = true; for (const ws of sockets) ws.terminate(); }, 1500);   // the Pi halts
+    setTimeout(() => { S.plug = false; Object.assign(S.standIn, { step: { kind: 'off' }, plugOn: false }); }, 5000);
   }, 1000);
 }
 

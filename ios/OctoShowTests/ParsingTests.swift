@@ -185,3 +185,45 @@ final class DisplayStatusTests: XCTestCase {
         XCTAssertNil(DisplayStatus(nil))
     }
 }
+
+final class SwitchOffStoryTests: XCTestCase {
+    private let heard = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testFollowedWhileOctoPrintAnswers() {
+        let cooling = SwitchOffStory(step: PowerStepInfo(kind: .cooling, nozzle: 112), heard: heard, online: true, now: heard)
+        XCTAssertEqual(cooling.phase, .running)
+        XCTAssertTrue(cooling.detail.contains("112°"))
+    }
+
+    /// The display's last steps can't reach the phone: the Pi, and OctoPrint with it, has gone.
+    /// A phone locked during "shutting down" and opened later should know how it ended.
+    func testOctoPrintGoneQuietAfterTheShutdownMeansSwitchedOff() {
+        let step = PowerStepInfo(kind: .shuttingDown)
+        let soon = SwitchOffStory(step: step, heard: heard, online: false, now: heard.addingTimeInterval(20))
+        XCTAssertEqual(soon.phase, .running, "the power goes about a minute after the Pi stops")
+        let later = SwitchOffStory(step: step, heard: heard, online: false, now: heard.addingTimeInterval(10 * 60))
+        XCTAssertEqual(later.phase, .done)
+        XCTAssertEqual(later.title, "Switched off")
+        XCTAssertEqual(SwitchOffStory(step: step, heard: heard, online: true, now: heard.addingTimeInterval(600)).phase, .running,
+                       "while OctoPrint still answers, the Pi hasn't gone")
+    }
+
+    func testOctoPrintGoneQuietBeforeTheShutdownIsLostTouch() {
+        let story = SwitchOffStory(step: PowerStepInfo(kind: .cooling, nozzle: 90), heard: heard, online: false, now: heard.addingTimeInterval(600))
+        XCTAssertEqual(story.phase, .lostTouch)
+    }
+
+    func testAFailureSaysWhy() {
+        let story = SwitchOffStory(step: PowerStepInfo(kind: .failed, message: "A print is running, so everything was left on."),
+                                   heard: heard, online: true, now: heard)
+        XCTAssertEqual(story.phase, .failed)
+        XCTAssertEqual(story.detail, "A print is running, so everything was left on.")
+    }
+
+    func testAStepThatIsUnderWayIsKeptWhenOctoPrintGoesQuiet() {
+        XCTAssertTrue(PowerStepInfo(kind: .cooling).underWay)
+        XCTAssertTrue(PowerStepInfo(kind: .shuttingDown).underWay)
+        XCTAssertFalse(PowerStepInfo(kind: .confirm).underWay)
+        XCTAssertFalse(PowerStepInfo(kind: .failed).underWay)
+    }
+}
