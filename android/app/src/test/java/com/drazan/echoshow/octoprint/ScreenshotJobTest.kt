@@ -1,6 +1,7 @@
 package com.drazan.echoshow.octoprint
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.drazan.echoshow.octoprint.octo.Outcome
 import com.drazan.echoshow.octoprint.octo.Phase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -74,8 +75,18 @@ class ScreenshotJobTest : ScreenWalk(5001) {
         tap(a, 350f, 300f)         // answer it
         settleUntil(3000) { vm.prompt == null }
 
-        scene("done")
-        settleUntil(5000, after = 800) { vm.outcome != null }
+        // OctoPrint calls a job done once its last line is in the printer, then says Finishing
+        // while the printer works through what it holds, and only then Operational. Done is
+        // still done after that, and it finished when the printer stopped.
+        scene("finishing")
+        settleUntil(4000, after = 300) { vm.isIn(Phase.FINISHING) && vm.outcome != null }
+        assertTrue("finishing should be shown as such", vm.isIn(Phase.FINISHING))
+        shot(a, "09a-finishing")
+        val toldAt = vm.outcome?.atMillis ?: 0L
+        settleUntil(6000, after = 800) { vm.isIn(Phase.READY) }
+        val done = vm.outcome
+        assertEquals("the job should still count as done", Outcome.Kind.DONE, done?.kind)
+        assertTrue("and say when the printer stopped, not when it was told", (done?.atMillis ?: 0L) > toldAt)
         shot(a, "09-finished")
     }
 }

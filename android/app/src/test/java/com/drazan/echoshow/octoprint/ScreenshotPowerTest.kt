@@ -52,8 +52,9 @@ class ScreenshotPowerTest : ScreenWalk(5004) {
         shot(a, "20b-off-when-done")
         assertTrue(vm.offWhenDone)
         assertNull(vm.power)
-        scene("done", "tool=180")
-        settleUntil(6000, after = 500) { vm.power is PowerStep.AfterPrint }
+        // as OctoPrint ends a job: done while still busy finishing, then Operational
+        scene("finishing", "tool=180")
+        settleUntil(8000, after = 500) { vm.power is PowerStep.AfterPrint }
         shot(a, "20c-done-so-switching-off")
         // it says so first and waits; the routine itself is the one photographed further down
         assertTrue("a finished job should lead to switching off unasked", vm.power is PowerStep.AfterPrint)

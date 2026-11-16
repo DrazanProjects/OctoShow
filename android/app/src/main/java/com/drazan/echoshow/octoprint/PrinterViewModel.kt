@@ -397,7 +397,16 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         ) {
             outcome = Outcome(Outcome.Kind.DONE, p.file.display, p.printTime, 0L)
         }
-        if (p.phase.busy && outcome != null) outcome = null
+        // A job running clears how the last one ended. Finishing and Cancelling don't: OctoPrint
+        // calls a job done once its last line is in the printer and then waits in Finishing while
+        // the printer works through what it holds, and it says a job was cancelled just before
+        // it goes back to Operational. Both are the end of the job just told of.
+        if (outcome != null && p.phase.busy && p.phase != Phase.FINISHING && p.phase != Phase.CANCELLING) outcome = null
+        // It finished when the printer stopped, not when OctoPrint ran out of lines to send.
+        if (before == Phase.FINISHING && p.phase == Phase.READY) {
+            outcome?.takeIf { it.kind == Outcome.Kind.DONE && it.atMillis > 0 }
+                ?.let { outcome = it.copy(atMillis = System.currentTimeMillis()) }
+        }
 
         if (p.phase == Phase.READY && before != Phase.READY) wantFiles()
         // the printer has just come free: time to carry on with the back catalogue

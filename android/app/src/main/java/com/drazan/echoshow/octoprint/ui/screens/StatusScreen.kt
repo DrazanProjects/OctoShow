@@ -153,7 +153,7 @@ fun StatusScreen(
             mode = stackMode,
             modifier = Modifier.width(118.dp).fillMaxHeight(),
             liveDone = vm.nozzleDone.takeIf { following != null },
-            callout = { LayerCallout(layers, if (fromCard) vm.nozzleHeight?.toDouble() else p.currentZ) },
+            callout = { LayerCallout(layers, if (fromCard || following != null) vm.nozzleHeight?.toDouble() else p.currentZ) },
         )
         Spacer(Modifier.width(6.dp))
 
@@ -418,9 +418,16 @@ private fun ColumnScope.Printing(vm: PrinterViewModel, p: PrinterSnapshot) {
     Spacer(Modifier.height(18.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
         p.printTime?.let { Fact("Running for", duration(it)) }
-        // OctoPrint's height is that of the last move it sent, and it sends none from the SD card
-        if (vm.jobFile?.origin == SD_CARD) vm.nozzleHeight?.let { Fact("Height", "%.1f mm".format(it)) }
-        else if (vm.layers.known) p.currentZ?.let { Fact("Height", "%.1f mm".format(it)) }
+        // The height of the layer the nozzle is on, when it is followed. OctoPrint's is that of the
+        // last move it sent: ahead of the nozzle, up in the air on every Z-hop, and of a file the
+        // printer reads from its SD card there is none.
+        val height = when {
+            vm.nozzleLayer != null -> vm.nozzleHeight?.toDouble()
+            vm.jobFile?.origin == SD_CARD -> null
+            vm.layers.known -> p.currentZ
+            else -> null
+        }
+        height?.let { Fact("Height", "%.1f mm".format(it)) }
     }
 
     Spacer(Modifier.weight(1f))

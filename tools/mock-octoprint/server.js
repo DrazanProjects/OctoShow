@@ -208,7 +208,7 @@ function jobBlock() {
 }
 function progressBlock() {
   const active = ['printing', 'paused', 'finishing'].includes(S.phase);
-  if (S.done && S.phase === 'ready') return { completion: 100, filepos: 4_000_000, printTime: Math.floor(S.total), printTimeLeft: 0, printTimeLeftOrigin: null };
+  if (S.done && (S.phase === 'ready' || S.phase === 'finishing')) return { completion: 100, filepos: 4_000_000, printTime: Math.floor(S.total), printTimeLeft: 0, printTimeLeftOrigin: null };
   if (!active) return { completion: S.file && S.phase === 'ready' ? 0 : null, filepos: null, printTime: null, printTimeLeft: null, printTimeLeftOrigin: null };
   return { completion: frac() * 100, filepos: Math.floor(frac() * 4_000_000), printTime: Math.floor(elapsed()), printTimeLeft: Math.floor(S.total - elapsed()), printTimeLeftOrigin: 'genius' };
 }
@@ -371,12 +371,24 @@ function startPrint(f, folder) {
   event('PrintStarted', { name: f.name, path: f.name, origin: 'local', size: 1 });
   if (!lacks('dashboard')) plugin('dashboard', dashboardFull());
 }
+// As OctoPrint 1.11 ends a job: done as soon as the last line is in the printer (the end G-code
+// has turned the heaters off by then), then Finishing while the printer works through the moves
+// it holds, and only after that Operational.
+const FINISHING_MS = 2500;
 function finish() {
-  S.phase = 'ready'; S.done = true; S.tool.target = 0; S.bed.target = 0;
+  S.phase = 'finishing'; S.done = true; S.tool.target = 0; S.bed.target = 0;
+  broadcast({ current: current(true) });
   event('PrintDone', { name: S.file.name, path: S.file.name, origin: 'local', size: 1, time: S.total });
+  clearTimeout(S.finishing);
+  S.finishing = setTimeout(() => {
+    if (S.phase !== 'finishing') return;
+    S.phase = 'ready';
+    broadcast({ current: current(true) });
+  }, FINISHING_MS);
 }
 function scene(name, q) {
   S.scene = name; S.prompt = null; S.done = false; S.pausedAt = null; S.speed = +(q.speed ?? 1);
+  clearTimeout(S.finishing);
   S.realpos = q.realpos === '1';
   S.sd = q.sd === '1';
   S.sdName = q.sdname || null;
@@ -396,6 +408,9 @@ function scene(name, q) {
     case 'paused': S.phase = 'paused'; S.pausedAt = now(); break;
     case 'prompt': S.phase = 'paused'; S.pausedAt = now(); S.prompt = { text: 'Filament ran out. Load a new spool, then continue.', choices: ['Continue', 'Cancel print'] }; break;
     case 'ready': S.phase = 'ready'; S.tool = { actual: 24.6, target: 0 }; S.bed = { actual: 23.1, target: 0 }; S.file = null; break;
+    // a job reaching its end while the display looks on
+    case 'finishing': S.started = now() - S.total; finish(); break;
+    // one that has ended: Operational at 100 %, with the PrintDone told once more
     case 'done': S.phase = 'ready'; S.done = true; S.tool = { actual: 61, target: 0 }; S.bed = { actual: 38, target: 0 }; break;
     case 'offline': S.phase = 'offline'; S.tool = { actual: 22, target: 0 }; S.bed = { actual: 22, target: 0 }; break;
     case 'error': S.phase = 'error'; break;
