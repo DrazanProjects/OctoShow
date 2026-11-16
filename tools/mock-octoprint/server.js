@@ -334,6 +334,31 @@ function realpos(f, millis) {
   S.extruded += 0.5;
   return `Recv: REALPOS ${(x0 + (x1 - x0) * t).toFixed(2)} ${(y0 + (y1 - y0) * t).toFixed(2)} ${((n + 1) * 0.2).toFixed(2)} ${S.extruded.toFixed(2)} ${millis}`;
 }
+// The terminal lines for G-code sent through the API, as OctoPrint logs them: numbered and
+// checksummed while printing, with the printer's own chatter mixed in (its temperature report
+// and OctoPrint's M105 poll), which a client reading replies has to look past.
+let lineNo = 100;
+function terminal(commands) {
+  const temps = `T:${S.tool.actual.toFixed(2)} /${S.tool.target.toFixed(2)} B:${S.bed.actual.toFixed(2)} /${S.bed.target.toFixed(2)} @:0 B@:0`;
+  const sendLine = c => {
+    if (S.phase !== 'printing') return `Send: ${c}`;
+    const s = `N${++lineNo} ${c}`;
+    let sum = 0; for (const ch of s) sum ^= ch.charCodeAt(0);
+    return `Send: ${s}*${sum}`;
+  };
+  const out = ['Send: M105', `Recv: ok ${temps}`];
+  for (const c of commands) {
+    const code = (/^[GMT]\d+/i.exec(c.trim()) || [''])[0].toUpperCase();
+    out.push(sendLine(c));
+    if (code === 'M114') out.push('Recv: X:110.00 Y:110.00 Z:5.00 E:0.00 Count X:8800 Y:8800 Z:2000');
+    if (code === 'M115') out.push('Recv: FIRMWARE_NAME:Marlin V1.0.6 (mock) SOURCE_CODE_URL:github.com/MarlinFirmware/Marlin PROTOCOL_VERSION:1.0 MACHINE_TYPE:Ender-3 V3 SE EXTRUDER_COUNT:1', 'Recv: Cap:AUTOREPORT_TEMP:1');
+    if (code === 'M503') out.push('Recv: echo:; Steps per unit:', 'Recv: echo:  M92 X80.00 Y80.00 Z400.00 E424.90');
+    out.push(code === 'M105' ? `Recv: ok ${temps}` : 'Recv: ok');
+    if (code === 'M114') out.push(`Recv:  ${temps}`);   // an auto-report landing in between
+  }
+  return out;
+}
+
 // OctoPrint hands these over twice a second, however many have come since the last time.
 setInterval(() => {
   if (!S.realpos || S.phase !== 'printing') return;
@@ -398,7 +423,7 @@ function scene(name, q) {
     : null;
   S.without = new Set((q.without || '').split(',').filter(Boolean));
   const p = +(q.progress ?? 0.165);
-  S.file = FILES[+(q.file ?? 0)] || FILES[0]; S.total = S.file.est; S.started = now() - S.total * p;
+  S.file = FILES[+(q.file ?? 0)] || FILES[0]; S.folder = null; S.total = S.file.est; S.started = now() - S.total * p;
   if (q.total) { S.total = +q.total; S.started = now() - S.total * p; }   // a job of some other length
   S.display = q.display || null;                                            // or shown under another name
   S.tool = { actual: 219.9, target: 220 }; S.bed = { actual: 55, target: 55 };
@@ -432,6 +457,30 @@ const APPROVE_MS = 2500;
 const json = (res, code, obj) => { const b = obj === undefined ? '' : JSON.stringify(obj); res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(b); };
 const none = res => { res.writeHead(204); res.end(); };
 const body = req => new Promise(r => { let s = ''; req.on('data', c => s += c); req.on('end', () => { try { r(JSON.parse(s || '{}')); } catch { r({}); } }); });
+// A multipart/form-data body (an upload), as its parts: { name, filename, data (a Buffer) }.
+const multipart = req => new Promise(r => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const buf = Buffer.concat(chunks);
+    const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(req.headers['content-type'] || '');
+    if (!m) return r([]);
+    const sep = Buffer.from('--' + (m[1] || m[2]).trim());
+    const parts = [];
+    for (let at = buf.indexOf(sep); at >= 0;) {
+      const start = at + sep.length;
+      if (buf.subarray(start, start + 2).toString() === '--') break;   // the closing boundary
+      const next = buf.indexOf(sep, start);
+      if (next < 0) break;
+      const part = buf.subarray(start + 2, next - 2);                     // without the CRLFs around it
+      const split = part.indexOf('\r\n\r\n');
+      const head = part.subarray(0, split).toString();
+      parts.push({ name: /name="([^"]*)"/i.exec(head)?.[1], filename: /filename="([^"]*)"/i.exec(head)?.[1], data: part.subarray(split + 4) });
+      at = next;
+    }
+    r(parts);
+  });
+});
 
 const handler = async (req, res) => {
   const u = new URL(req.url, 'http://x');
@@ -507,6 +556,27 @@ const handler = async (req, res) => {
     },
   });
 
+  // The plain status reads. The apps follow the push socket instead, but a client that only
+  // asks now and then reads these. Shapes as OctoPrint 1.11 sends them.
+  if (p === '/api/job' && req.method === 'GET') {
+    const st = stateFlags();
+    return json(res, 200, { job: jobBlock(), progress: progressBlock(), state: st.text, error: st.error });
+  }
+  if (p === '/api/printer' && req.method === 'GET') {
+    if (['offline', 'error'].includes(S.phase)) return json(res, 409, { error: 'Printer is not operational' });
+    const { time, ...temperature } = tempEntry();
+    for (const h of Object.values(temperature)) h.offset = 0;
+    return json(res, 200, { temperature, sd: { ready: false }, state: stateFlags() });
+  }
+  if (p === '/api/connection' && req.method === 'GET') {
+    const on = S.phase !== 'offline';
+    return json(res, 200, {
+      current: { state: on ? stateFlags().text : 'Closed', port: on ? '/dev/ttyACM0' : null, baudrate: on ? 115200 : null, printerProfile: '_default' },
+      options: { ports: ['/dev/ttyACM0'], baudrates: [250000, 115200], printerProfiles: [{ id: '_default', name: 'Ender-3 V3 SE' }],
+                 portPreference: '/dev/ttyACM0', baudratePreference: 115200, printerProfilePreference: '_default', autoconnect: true },
+    });
+  }
+
   // system commands, as OctoPi sets them up. The mock can't actually vanish from the
   // network the way a Pi does, so after a shutdown it just carries on answering.
   if (p === '/api/system/commands/core' && req.method === 'GET') return json(res, 200, (lacks('shutdown') ? [] : ['shutdown', 'reboot', 'restart']).map(action => (
@@ -514,6 +584,29 @@ const handler = async (req, res) => {
   if (p === '/api/system/commands/core/shutdown' && req.method === 'POST') { console.log('  SHUTDOWN asked for'); return none(res); }
 
   if (p === '/api/files/local' && req.method === 'GET') { await new Promise(r => setTimeout(r, 1500)); return json(res, 200, listing()); }
+  // uploading a file, as a slicer or script does. Like OctoPrint, a file of the same name is
+  // replaced without asking, except the one being printed. Answers in OctoPrint 1.x's shape.
+  if (p === '/api/files/local' && req.method === 'POST') {
+    const parts = await multipart(req);
+    const file = parts.find(x => x.name === 'file' && x.filename);
+    if (!file) return json(res, 400, { error: 'No file to upload and no folder to create' });
+    if (!/\.(gcode|gco|g)$/i.test(file.filename)) return json(res, 415, { error: 'Could not upload the file, not a gcode file' });
+    const folder = (parts.find(x => x.name === 'path')?.data.toString() || '').replace(/^\/+|\/+$/g, '') || null;
+    if (folder && folder !== FOLDER.name) return json(res, 404, { error: `Folder not found: ${folder}` });
+    const name = file.filename, target = (folder ? folder + '/' : '') + name;
+    if (S.file && S.file.name === name && (S.folder || null) === folder && ['printing', 'paused', 'finishing'].includes(S.phase))
+      return json(res, 409, { error: `Trying to overwrite file that is currently being printed: ${target}` });
+    if (folder) { if (!FOLDER.children.includes(name)) FOLDER.children.push(name); }
+    else {
+      const f = { name, thumb: null, est: 600, fil: 1000, layers: 10, maxZ: 2, age: 0, last: null };
+      const i = FILES.findIndex(x => x.name === name);
+      if (i >= 0) FILES[i] = f; else FILES.push(f);   // at the end: the scenes print FILES[0]
+    }
+    console.log('  uploaded', target, file.data.length, 'bytes');
+    S.sent.push({ upload: target, bytes: file.data.length });
+    const refs = { resource: `http://localhost/api/files/local/${target}`, download: `http://localhost/downloads/files/local/${target}` };
+    return json(res, 201, { done: true, files: { local: { name, origin: 'local', path: target, refs } }, effectiveSelect: false, effectivePrint: false });
+  }
   // the card holds just the job, and OctoPrint can list it but not read it
   if (p.startsWith('/api/files/sdcard/') && req.method === 'GET') {
     const e = S.sd && S.file ? sdEntry() : null;
@@ -524,6 +617,16 @@ const handler = async (req, res) => {
     const e = find(fp);
     if (!e) return json(res, 404, { error: 'not found' });
     if (req.method === 'GET') return json(res, 200, e);
+    // deleting a file, though not the one a running job is printing
+    if (req.method === 'DELETE') {
+      if (S.file && S.file.name === e.name && ['printing', 'paused', 'finishing'].includes(S.phase)) return json(res, 409, { error: `Trying to delete a file that is currently in use: ${fp}` });
+      const i = FILES.findIndex(f => f.name === e.name && !fp.includes('/'));
+      if (i >= 0) FILES.splice(i, 1);
+      const j = fp.startsWith(FOLDER.name + '/') ? FOLDER.children.indexOf(e.name) : -1;
+      if (j >= 0) FOLDER.children.splice(j, 1);
+      console.log('  deleted', fp);
+      return none(res);
+    }
     const b = await body(req);
     if (S.phase !== 'ready') return json(res, 409, { error: 'Printer is already printing, cannot select a new file' });
     const folder = fp.includes('/') ? fp.split('/')[0] : null;
@@ -567,6 +670,16 @@ const handler = async (req, res) => {
     if (p.endsWith('/bed') && b.command === 'target') S.bed.target = b.target;
     if (p.endsWith('/printhead') && ['jog', 'home'].includes(b.command) && S.phase === 'printing') return json(res, 409, { error: 'Printer is currently printing' });
     if (p.endsWith('/command')) for (const c of b.commands || []) { const m = /^M106 S(\d+)/.exec(c); if (m) { S.fan = Math.round(+m[1] * 100 / 255); if (!lacks('dashboard')) plugin('dashboard', { fanSpeed: String(S.fan) }); } }
+    if (p.endsWith('/command')) {
+      // targets set by G-code, as the firmware takes them
+      for (const c of b.commands || []) {
+        const t = /^M10[49]\b.*?\bS(\d+)/i.exec(c), bed = /^M1[49]0\b.*?\bS(\d+)/i.exec(c);
+        if (t) S.tool.target = +t[1];
+        if (bed) S.bed.target = +bed[1];
+      }
+      // and the terminal log OctoPrint passes on: what was sent and what the printer said back
+      setTimeout(() => broadcast({ current: { ...current(false), logs: terminal(b.commands || []) } }), 100);
+    }
     return none(res);
   }
 
