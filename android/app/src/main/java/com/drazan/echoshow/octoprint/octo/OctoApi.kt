@@ -303,6 +303,41 @@ class OctoApi(
     /** Shuts down the computer OctoPrint runs on, not just OctoPrint. */
     suspend fun shutDownSystem() = send("api/system/commands/core/shutdown", JSONObject())
 
+    /* ---------------- the printer's SD card (the Card Transfer plugin) ---------------- */
+
+    /**
+     * Whether the printer's SD card has the same file as [file] in OctoPrint's storage, as the
+     * Card Transfer plugin sees it. Null when there is no such plugin, or it has its check
+     * switched off: then printing works as it always did.
+     */
+    suspend fun onCard(file: PrintFile): Boolean? {
+        val link = base.newBuilder().addPathSegments("api/plugin/cardtransfer").addQueryParameter("card", file.path).build()
+        return exec(Request.Builder().url(link).build(), expectOk = false) { r ->
+            if (r.code != 200) return@exec null
+            val o = runCatching { JSONObject(r.text()) }.getOrNull() ?: return@exec null
+            if (!o.optBoolean("print_check", true)) null else o.optBoolean("on_card")
+        }
+    }
+
+    /** The copy onto the card under way, if any: for when the push messages about it were missed. */
+    suspend fun cardCopy(): CardCopy? {
+        val link = base.newBuilder().addPathSegments("api/plugin/cardtransfer").addQueryParameter("copy", "").build()
+        return exec(Request.Builder().url(link).build(), expectOk = false) { r ->
+            if (r.code != 200) return@exec null
+            runCatching { JSONObject(r.text()) }.getOrNull()?.optJSONObject("copying")?.let(::parseCardCopy)
+        }
+    }
+
+    /** Copies [file] onto the printer's SD card the fast way, and prints it from there once it's on. */
+    suspend fun copyToCardAndPrint(file: PrintFile) =
+        send("api/plugin/cardtransfer", JSONObject().put("command", "send_and_print").put("path", file.path))
+
+    /** Prints [file] from OctoPrint after all, though the card hasn't got it: allowed once, then started. */
+    suspend fun printFromOctoPrint(file: PrintFile) {
+        send("api/plugin/cardtransfer", JSONObject().put("command", "allow_local").put("path", file.path))
+        print(file)
+    }
+
     /* ---------------- plumbing ---------------- */
 
     suspend fun send(path: String, body: JSONObject) = exec(post(path, body)) { }
@@ -357,8 +392,26 @@ fun Throwable.forPeople(): String = when (this) {
     is OctoHttpException -> when (code) {
         401, 403 -> "OctoPrint turned down this display's access key."
         404 -> "OctoPrint couldn't find that."
-        409 -> "The printer can't do that right now."
+        409 -> if (detail.contains("SD card")) "That file isn’t on the printer’s SD card yet."
+        else "The printer can't do that right now."
         else -> "OctoPrint answered with an error ($code)."
     }
     else -> "Couldn't reach OctoPrint."
+}
+
+/**
+ * The Card Transfer plugin's account of a copy: {name, fraction, print_after, heating: {bed, tool0}}.
+ * Null without a name.
+ */
+internal fun parseCardCopy(o: JSONObject): CardCopy? {
+    val name = o.optString("name").takeIf { it.isNotBlank() } ?: return null
+    val heating = o.optJSONObject("heating")
+    fun degrees(key: String) = heating?.optDouble(key)?.takeIf { !it.isNaN() && it > 0 }?.toInt()
+    return CardCopy(
+        name = name,
+        fraction = o.optDouble("fraction", 0.0).takeIf { !it.isNaN() }?.toFloat()?.coerceIn(0f, 1f) ?: 0f,
+        printAfter = o.optBoolean("print_after", false),
+        bed = degrees("bed"),
+        nozzle = degrees("tool0"),
+    )
 }

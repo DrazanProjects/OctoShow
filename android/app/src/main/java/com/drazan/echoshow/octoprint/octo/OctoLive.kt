@@ -40,6 +40,10 @@ sealed interface LiveEvent {
     data class LightChanged(val pin: Int, val percent: Int) : LiveEvent
     /** The phone asking, through the OctoShow plugin, for everything to be switched off (or not). */
     data class Remote(val ask: RemoteAsk) : LiveEvent
+    /** A copy onto the printer's SD card went wrong ([error] says how); the file is still in OctoPrint. */
+    data class CardCopyFailed(val name: String, val error: String) : LiveEvent
+    /** The Card Transfer plugin switched the heaters off: they were heating for a print that didn't come. */
+    data class HeatersOff(val why: String) : LiveEvent
 }
 
 /**
@@ -56,6 +60,8 @@ class OctoLive(private val api: OctoApi) {
     val events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 32)
     /** Where the nozzle really is, when the printer's firmware says. See [NozzleFix]. */
     val fixes = MutableSharedFlow<NozzleFix>(extraBufferCapacity = 64)
+    /** A file going onto the printer's SD card, while it does (the Card Transfer plugin). */
+    val cardCopy = MutableStateFlow<CardCopy?>(null)
     /** Readings have come over this socket, so updates are worth having as often as they can be. */
     private var reporting = false
 
@@ -124,6 +130,9 @@ class OctoLive(private val api: OctoApi) {
                             gotData = true
                             msg.obj("history")?.let { applyState(it, replaceTemps = true) }
                             link.value = Link.Online
+                            // A copy onto the card is told as it goes; what was missed while this
+                            // socket was down is asked for. No plugin, or no answer: no copy.
+                            launch { cardCopy.value = runCatching { api.cardCopy() }.getOrNull() }
                         }
                         msg.has("current") -> {
                             gotData = true
@@ -272,6 +281,29 @@ class OctoLive(private val api: OctoApi) {
             "octoshow" -> if (data.str("type") == "request") {
                 RemoteAsk.of(data.str("action"))?.let { events.tryEmit(LiveEvent.Remote(it)) }
             }
+            "cardtransfer" -> applyCardTransfer(data)
+        }
+    }
+
+    /** A copy onto the printer's SD card: started, how far it has got, and how it ended. */
+    private fun applyCardTransfer(d: JSONObject) {
+        when (d.str("type")) {
+            "transfer" -> when (d.str("stage")) {
+                "start" -> cardCopy.value = parseCardCopy(d)
+                "progress" -> {
+                    val name = d.str("name") ?: return
+                    val fraction = d.dbl("fraction")?.toFloat()?.coerceIn(0f, 1f) ?: return
+                    // a copy whose start was missed (this socket came up during it) is picked up here
+                    val known = cardCopy.value?.takeIf { it.name == name } ?: CardCopy(name, 0f)
+                    cardCopy.value = known.copy(fraction = fraction)
+                }
+                "done" -> cardCopy.value = null
+                "failed" -> {
+                    cardCopy.value = null
+                    events.tryEmit(LiveEvent.CardCopyFailed(d.str("name").orEmpty(), d.str("error").orEmpty()))
+                }
+            }
+            "heaters_off" -> events.tryEmit(LiveEvent.HeatersOff(d.str("why").orEmpty()))
         }
     }
 
@@ -303,7 +335,7 @@ class OctoLive(private val api: OctoApi) {
                     // OctoPrint takes text here as a pattern, and sends only the log lines it fits
                     .put("state", JSONObject().put("logs", NOZZLE_MARK).put("messages", false))
                     .put("events", true)
-                    .put("plugins", JSONArray(listOf("dashboard", "LightControls", "action_command_prompt", "octoshow"))),
+                    .put("plugins", JSONArray(listOf("dashboard", "LightControls", "action_command_prompt", "octoshow", "cardtransfer"))),
             )
             .toString()
         const val RETRY_MS = 4_000L

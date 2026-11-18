@@ -32,6 +32,21 @@ class ScreenshotIdleTest : ScreenWalk(5002) {
         settleUntil(5000, after = 500) { vm.isIn(Phase.OFFLINE) }
         shot(a, "11-printer-offline")
 
+        // A file going onto the printer's SD card: OctoPrint calls the printer offline meanwhile.
+        // The display says what is really going on, without the button that would connect it.
+        scene("offline", "copying=0.42&copyprint=1&copyheat=1")
+        settleUntil(5000, after = 500) { vm.cardCopy?.fraction == 0.42f }
+        shot(a, "11b-copying-to-card")
+        assertTrue("the copy is followed, with the print and the heating it is for",
+            vm.cardCopy?.printAfter == true && vm.cardCopy?.bed == 60 && vm.cardCopy?.nozzle == 150)
+        get("$mock/mock/copy?stage=progress&fraction=0.8")
+        settleUntil(3000, after = 300) { vm.cardCopy?.fraction == 0.8f }
+        assertEquals(0.8f, vm.cardCopy?.fraction)
+        get("$mock/mock/copy?stage=failed&error=the%20printer%20stopped%20answering")
+        settleUntil(3000, after = 300) { vm.cardCopy == null }
+        assertTrue("a failed copy is said: ${vm.notice}",
+            vm.cardCopy == null && vm.notice?.contains("SD card failed: the printer stopped answering") == true)
+
         scene("error")
         settleUntil(5000, after = 500) { vm.isIn(Phase.ERROR) }
         shot(a, "12-printer-error")
@@ -47,6 +62,31 @@ class ScreenshotIdleTest : ScreenWalk(5002) {
         shot(a, "14-start-print")
         tap(a, 760f, 310f)         // Not now
         settle(600)
+
+        // the same file, with the Card Transfer plugin saying the printer's SD card hasn't got it:
+        // the sheet offers copying it there first, or printing from OctoPrint after all
+        scene("ready", "cardtransfer=missing")
+        settleUntil(5000, after = 300) { vm.isIn(Phase.READY) }
+        tap(a, 700f, 430f)         // Print
+        settle(1000)
+        shot(a, "14b-start-print-not-on-card")
+        sent()                     // forget what went before
+        tap(a, 589f, 266f)         // Copy to SD card and print
+        settle(1500)
+        assertTrue("Copy to SD card and print asks the plugin for just that",
+            sent().any { it.optString("cardtransfer") == "send_and_print" })
+        tap(a, 38f, 104f)          // back to the files
+        settleUntil(7000, after = 1000) { vm.files.loaded && !vm.files.loading }
+        tap(a, 700f, 430f)         // Print
+        settle(1000)
+        tap(a, 503f, 332f)         // Print from OctoPrint
+        settleUntil(5000, after = 300) { vm.isIn(Phase.PRINTING) }
+        assertTrue("Print from OctoPrint is allowed once, then started",
+            sent().any { it.optString("cardtransfer") == "allow_local" } && vm.isIn(Phase.PRINTING))
+        scene("ready")
+        settleUntil(5000, after = 300) { vm.isIn(Phase.READY) }
+        tap(a, 38f, 104f)          // the files again, as the walk had them
+        settle(1200)
 
         // controls, idle and mid-print
         tap(a, 38f, 164f)

@@ -87,6 +87,19 @@ data class LayerInfo(
 
 data class TempSample(val tool: Float?, val bed: Float?)
 
+/**
+ * A file going onto the printer's SD card through the Card Transfer plugin. OctoPrint lets go of
+ * the printer meanwhile, so it reads as offline. [bed] and [nozzle] are what is heating for the
+ * print that follows ([printAfter]), if anything.
+ */
+data class CardCopy(
+    val name: String,
+    val fraction: Float,
+    val printAfter: Boolean = false,
+    val bed: Int? = null,
+    val nozzle: Int? = null,
+)
+
 /** How the last job ended, kept until the next one starts. */
 data class Outcome(
     val kind: Kind,

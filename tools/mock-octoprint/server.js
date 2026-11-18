@@ -27,6 +27,15 @@
 // does, before the display can say any more.
 // GET /mock/sent lists the requests that came through the plugin, among the rest.
 //
+// Add &cardtransfer=oncard or &cardtransfer=missing for the Card Transfer plugin (OctoPrint-CardTransfer):
+// asked about a file in OctoPrint's storage, it says the printer's SD card has it, or hasn't. Its
+// commands (send_and_print, allow_local, send_to_card) are listed by GET /mock/sent. Without it,
+// the plugin isn't installed.
+// Add &copying=0.42 (how far) to have it copying a file onto the card, the printer offline meanwhile
+// as OctoPrint has it, with &copyprint=1 for a print to follow and &copyheat=1 for the bed and nozzle
+// heating for it. GET /mock/copy?stage=progress&fraction=0.8 (or done, failed, heaters_off) tells
+// the display how it goes on.
+//
 // Add &without=camera,dashboard,thumbs,lights,presets,shutdown,bed,appkeys,octoshow (any of them)
 // to be an OctoPrint that lacks those: no webcam set up, plugins not installed, no temperature
 // presets, no shutdown command, a printer with no heated bed, no way to ask for a key.
@@ -417,6 +426,12 @@ function scene(name, q) {
   S.realpos = q.realpos === '1';
   S.sd = q.sd === '1';
   S.sdName = q.sdname || null;
+  S.cardTransfer = ['oncard', 'missing'].includes(q.cardtransfer) ? q.cardtransfer : null;
+  S.copy = q.copying !== undefined
+    ? { name: (FILES[+(q.file ?? 0)] || FILES[0]).name, fraction: +q.copying || 0, print_after: q.copyprint === '1',
+        heating: q.copyheat === '1' ? { bed: 60, tool0: 150 } : null }
+    : null;
+  if (S.copy && !S.cardTransfer) S.cardTransfer = 'oncard';
   clearInterval(S.standInRun); S.standInRun = null;
   S.standIn = q.echoshow === '1'
     ? { name: 'Echo Show', plug: true, plugOn: true, canGoOff: true, offWhenDone: false, step: null }
@@ -440,6 +455,7 @@ function scene(name, q) {
     case 'offline': S.phase = 'offline'; S.tool = { actual: 22, target: 0 }; S.bed = { actual: 22, target: 0 }; break;
     case 'error': S.phase = 'error'; break;
   }
+  if (S.copy) { S.phase = 'offline'; S.tool = { actual: 22, target: S.copy.heating ? 150 : 0 }; S.bed = { actual: 22, target: S.copy.heating ? 60 : 0 }; }
   if (q.tool) S.tool.actual = +q.tool;
   S.dead = name === 'dead';
   if (S.dead) { for (const ws of sockets) ws.terminate(); return; }
@@ -447,6 +463,31 @@ function scene(name, q) {
   if (!lacks('dashboard')) plugin('dashboard', dashboardFull());
   plugin('action_command_prompt', S.prompt ? { action: 'show', ...S.prompt } : { action: 'close' });
   if (name === 'done') event('PrintDone', { name: S.file.name, path: S.file.name, origin: 'local', size: 1, time: S.total });
+  if (S.copy) plugin('cardtransfer', { type: 'transfer', stage: 'start', name: S.copy.name, heating: S.copy.heating, print_after: S.copy.print_after });
+  if (S.copy) plugin('cardtransfer', { type: 'transfer', stage: 'progress', name: S.copy.name, fraction: S.copy.fraction });
+}
+
+// The Card Transfer plugin's copy going on, or ending: the printer comes back when it ends
+function copyGoesOn(q) {
+  const name = S.copy?.name || q.name || FILES[0].name;
+  switch (q.stage) {
+    case 'progress':
+      if (S.copy) S.copy.fraction = +q.fraction;
+      plugin('cardtransfer', { type: 'transfer', stage: 'progress', name, fraction: +q.fraction });
+      break;
+    case 'done':
+    case 'failed':
+      S.copy = null; S.phase = 'ready';
+      plugin('cardtransfer', q.stage === 'done'
+        ? { type: 'transfer', stage: 'done', name, card: 'CARDFI~1.GCO', seconds: 61.2 }
+        : { type: 'transfer', stage: 'failed', name, error: q.error || 'the printer stopped answering', seconds: 12.5 });
+      broadcast({ current: current(true) });
+      break;
+    case 'heaters_off':
+      S.tool.target = 0; S.bed.target = 0;
+      plugin('cardtransfer', { type: 'heaters_off', why: q.why || `${name} didn't start printing` });
+      break;
+  }
 }
 
 // ---------------- http ----------------
@@ -490,6 +531,7 @@ const handler = async (req, res) => {
 
   // mock controls
   if (p === '/mock/set') { scene(u.searchParams.get('scene') || 'printing', Object.fromEntries(u.searchParams)); return json(res, 200, { ok: true, phase: S.phase }); }
+  if (p === '/mock/copy') { copyGoesOn(Object.fromEntries(u.searchParams)); return json(res, 200, { ok: true, copy: S.copy }); }
   if (p === '/mock/sent') { const sent = S.sent; S.sent = []; return json(res, 200, sent); }
 
   // the smart plug: Tasmota's web command page. A separate device in real life, so it
@@ -711,6 +753,20 @@ const handler = async (req, res) => {
       return none(res);
     }
     return json(res, 400, { error: 'Unknown command' });
+  }
+  if (p === '/api/plugin/cardtransfer') {
+    if (!S.cardTransfer) return json(res, 404, {});
+    if (req.method === 'GET' && u.searchParams.has('copy')) return json(res, 200, { copying: S.copy, queued: [] });
+    if (req.method === 'GET') {
+      const card = u.searchParams.get('card') || '';
+      const on = S.cardTransfer === 'oncard';
+      return json(res, 200, { path: card, on_card: on, card_name: on ? 'CARDFI~1.GCO' : null, print_check: true });
+    }
+    const b = await body(req);
+    if (!['send_and_print', 'allow_local', 'send_to_card'].includes(b.command)) return json(res, 400, { error: 'Unknown command' });
+    console.log('  card transfer:', b.command, b.path);
+    S.sent.push({ cardtransfer: b.command, path: b.path });
+    return json(res, 200, b.command === 'allow_local' ? { path: b.path, allowed_for_s: 120 } : { path: b.path, started: true });
   }
   if (p === '/api/plugin/LightControls' && req.method === 'POST') {
     const b = await body(req);

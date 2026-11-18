@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drazan.echoshow.octoprint.PrinterViewModel
 import com.drazan.echoshow.octoprint.data.DisplayPrefs
+import com.drazan.echoshow.octoprint.octo.CardCopy
 import com.drazan.echoshow.octoprint.octo.LayerInfo
 import com.drazan.echoshow.octoprint.octo.Outcome
 import com.drazan.echoshow.octoprint.octo.Phase
@@ -163,10 +164,13 @@ fun StatusScreen(
         val power = onPower?.takeIf { !active || vm.info.canShutDown }
         Box(Modifier.weight(1f).fillMaxHeight()) {
             Column(Modifier.fillMaxSize()) {
+                val copying = vm.cardCopy
                 when {
                     // a fault needs reading before anything about the last job does
                     p.phase == Phase.ERROR -> NotConnected(vm, p)
                     active -> Printing(vm, p)
+                    // OctoPrint calls the printer offline while it takes a file onto its card
+                    copying != null -> Copying(copying)
                     outcome != null -> Finished(vm, outcome, subject, onAskPrint)
                     p.phase == Phase.READY -> Ready(vm, subject, onFiles, onAskPrint)
                     else -> NotConnected(vm, p)
@@ -450,6 +454,41 @@ private fun ColumnScope.Printing(vm: PrinterViewModel, p: PrinterSnapshot) {
         }
         HoldButton("Cancel", "Hold to cancel", vm::cancel, Modifier.weight(1f), enabled = p.phase.canCancel)
     }
+}
+
+/**
+ * A file going onto the printer's SD card. OctoPrint has handed the printer over for it and calls
+ * it offline, so this stands in for "Printer offline", without the button to connect, which would
+ * take the printer back in the middle of the copy.
+ */
+@Composable
+private fun ColumnScope.Copying(copy: CardCopy) {
+    StateLine("Copying to SD card", Ink.Ember)
+    Spacer(Modifier.height(10.dp))
+    T(prettyName(copy.name), Type.Title, maxLines = 2)
+
+    Spacer(Modifier.weight(1f))
+
+    T("${(copy.fraction * 100).toInt().coerceIn(0, 100)}%", Type.Hero)
+    Spacer(Modifier.height(2.dp))
+    T(if (copy.printAfter) "copied, then it prints from the card" else "onto the printer’s SD card", Type.Body, size = 17.sp)
+    val heating = listOfNotNull(copy.bed?.let { "bed ${degrees(it.toFloat())}" }, copy.nozzle?.let { "nozzle ${degrees(it.toFloat())}" })
+    if (heating.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Nozzle, Ink.Ember, size = 18.dp)
+            Spacer(Modifier.width(8.dp))
+            T("Heating: ${heating.joinToString(", ")}", Type.Label, color = Ink.Bone, size = 16.sp, maxLines = 1)
+        }
+    }
+
+    Spacer(Modifier.weight(1f))
+
+    Box(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(Ink.Line)) {
+        Box(Modifier.fillMaxWidth(copy.fraction.coerceIn(0f, 1f)).fillMaxHeight().clip(CircleShape).background(Ink.Ember))
+    }
+    Spacer(Modifier.height(14.dp))
+    T("The printer reads as offline until the copy is done.", Type.Body, color = Ink.Faint, size = 15.sp, maxLines = 2)
 }
 
 @Composable

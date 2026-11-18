@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.drazan.echoshow.octoprint.data.DisplayPrefs
 import com.drazan.echoshow.octoprint.data.Prefs
 import com.drazan.echoshow.octoprint.data.Server
+import com.drazan.echoshow.octoprint.octo.CardCopy
 import com.drazan.echoshow.octoprint.octo.FoundServer
 import com.drazan.echoshow.octoprint.octo.HeatPreset
 import com.drazan.echoshow.octoprint.octo.JobFile
@@ -49,6 +50,7 @@ import com.drazan.echoshow.octoprint.octo.normalizeBase
 import com.drazan.echoshow.octoprint.octo.obj
 import com.drazan.echoshow.octoprint.octo.sameFileAs
 import com.drazan.echoshow.octoprint.octo.str
+import com.drazan.echoshow.octoprint.ui.prettyName
 import com.drazan.echoshow.octoprint.power.Plug
 import com.drazan.echoshow.octoprint.power.PowerOff
 import com.drazan.echoshow.octoprint.power.PowerRig
@@ -154,6 +156,13 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** A question from the printer that is waiting for an answer. */
     var prompt: Prompt? by mutableStateOf(null)
+        private set
+    /**
+     * A file going onto the printer's SD card (the Card Transfer plugin). OctoPrint has let go of
+     * the printer meanwhile and calls it offline, so this is shown instead, and nothing may connect
+     * to the printer or switch it off until the copy is done.
+     */
+    var cardCopy: CardCopy? by mutableStateOf(null)
         private set
     /** One line of feedback after an action fails; clears itself. */
     var notice: String? by mutableStateOf(null)
@@ -350,6 +359,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         launch { live.layers.collect { layers = it } }
         launch { live.temps.collect { temps = it } }
         launch { live.prompt.collect { prompt = it } }
+        launch { live.cardCopy.collect { cardCopy = it } }
         launch { live.events.collect { onEvent(it) } }
         launch { reportToPhones(octo) }
         launch {
@@ -467,6 +477,11 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 lights = info.lights.map { if (it.pin == e.pin) it.copy(percent = e.percent) else it }
             )
             is LiveEvent.Remote -> onRemote(e.ask)
+            is LiveEvent.CardCopyFailed -> say(
+                listOfNotNull("Copying ${prettyName(e.name)} to the SD card failed", e.error.takeIf { it.isNotBlank() })
+                    .joinToString(": ") + ". It is still in OctoPrint."
+            )
+            is LiveEvent.HeatersOff -> say("Heaters switched off: ${e.why.ifBlank { "nothing came to use them" }}.")
         }
     }
 
@@ -746,6 +761,29 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     fun cancel() = act { cancel() }
     fun print(file: PrintFile) = act { print(file) }
 
+    /**
+     * Whether the printer's SD card has [file] (OctoApi.onCard). A file on the card prints from it;
+     * one that isn't gets the choice on the print sheet. Null when there is nothing to ask.
+     */
+    suspend fun onCard(file: PrintFile): Boolean? {
+        if (file.origin == SD_CARD) return null
+        val octo = api ?: return null
+        return try {
+            octo.onCard(file)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun copyToCardAndPrint(file: PrintFile) = act {
+        copyToCardAndPrint(file)
+        say("Copying it to the printer’s SD card. The print starts once it’s there.")
+    }
+
+    fun printFromOctoPrint(file: PrintFile) = act { printFromOctoPrint(file) }
+
     /** Put the finished job away so the status screen goes back to "Ready". */
     fun dismissOutcome() {
         printer?.let { cleared.edit().putString("job", jobId(it)).apply() }
@@ -899,6 +937,11 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                     power = null
                     return@launch
                 }
+                // an upload that waited for the print goes onto the card now: the Pi has to stay up
+                if (cardCopy != null) {
+                    power = PowerStep.Failed(COPYING_LEFT_ON)
+                    return@launch
+                }
                 power = PowerStep.AfterPrint(left)
                 delay(1_000)
             }
@@ -917,6 +960,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
             RemoteAsk.OFF -> when {
                 plug == null -> Unit   // nothing to switch off with; the phone isn't offered the button
                 printer?.phase?.busy == true -> power = PowerStep.Failed("A print is running, so everything was left on.")
+                cardCopy != null -> power = PowerStep.Failed(COPYING_LEFT_ON)
                 power == null || power == PowerStep.Confirm || power is PowerStep.Failed -> {
                     power = null
                     switchOff()
@@ -994,6 +1038,11 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         // never under a job; the sequence checks again before it touches anything
         if (printer?.phase?.busy == true) return
         if (powerJob?.isActive == true) return
+        // nor under a copy onto the card, which the Pi is doing and the printer is taking
+        if (cardCopy != null) {
+            power = PowerStep.Failed(COPYING_LEFT_ON)
+            return
+        }
         // What is known of the printer is only as fresh as the connection it came over. With
         // OctoPrint out of touch, a job could have been started from elsewhere unseen.
         if (link != Link.Online) {
@@ -1006,7 +1055,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 private var pi: InetAddress? = null
 
                 override fun nozzle() = printer?.tool?.actual
-                override fun printing() = printer?.phase?.busy == true
+                override fun printing() = printer?.phase?.busy == true || cardCopy != null
                 override suspend fun heatersOff() {
                     octo.setToolTarget(0)
                     octo.setBedTarget(0)
@@ -1285,6 +1334,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         const val REDRAW_ASK_AGAIN_MS = 60_000L
         const val REDRAW_TRIES = 5
         const val AFTER_PRINT_PAUSE_S = 30
+        const val COPYING_LEFT_ON = "A file is going onto the printer’s SD card, so everything was left on."
         const val SELF_CHECK_MS = 12 * 3_600_000L
         /** The app is the home screen, so it is running well inside this long after a boot. */
         const val BOOT_WINDOW_MS = 180_000L

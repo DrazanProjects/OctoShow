@@ -341,6 +341,11 @@ private fun PrintSheet(vm: PrinterViewModel, file: PrintFile, onClose: () -> Uni
     val clock24 = LocalDisplay.current.clock24
     val shown by rememberPreview(vm, file)
     val canPrint = vm.printer?.phase == Phase.READY
+    // A file in OctoPrint's storage: does the printer's SD card have it too? (the Card Transfer
+    // plugin). One it has prints from the card; one it hasn't gets the choice below.
+    var onCard by remember(file) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(file) { onCard = vm.onCard(file) }
+    val missing = onCard == false
 
     Scrim(onClose) {
         Row(Modifier.width(640.dp).clip(PanelShape).background(Ink.Panel).padding(20.dp)) {
@@ -348,7 +353,7 @@ private fun PrintSheet(vm: PrinterViewModel, file: PrintFile, onClose: () -> Uni
                 ModelPreview(shown.picture, reveal = null, modifier = Modifier.fillMaxSize().padding(10.dp), plate = false, note = shown.note)
             }
             Spacer(Modifier.width(22.dp))
-            Column(Modifier.weight(1f).height(196.dp)) {
+            Column(if (missing) Modifier.weight(1f) else Modifier.weight(1f).height(196.dp)) {
                 T(prettyName(file.display), Type.Title, maxLines = 2)
                 Spacer(Modifier.height(8.dp))
                 val seconds = file.estimatedPrintTime?.toLong()
@@ -359,21 +364,49 @@ private fun PrintSheet(vm: PrinterViewModel, file: PrintFile, onClose: () -> Uni
                     Type.Body,
                 )
                 Spacer(Modifier.height(4.dp))
+                if (missing) {
+                    T("It isn’t on the printer’s SD card yet. Printing it from OctoPrint isn’t recommended.", Type.Body, color = Ink.Warn)
+                    Spacer(Modifier.height(4.dp))
+                }
                 T(
                     if (canPrint) "Check the bed is clear before you start." else "The printer isn’t ready to start a job.",
                     Type.Body, color = if (canPrint) Ink.Bone else Ink.Warn,
                 )
-                Spacer(Modifier.weight(1f))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (missing) {
+                    Spacer(Modifier.height(16.dp))
                     SolidButton(
-                        "Start print",
+                        "Copy to SD card and print",
                         {
-                            vm.print(file)
+                            vm.copyToCardAndPrint(file)
                             onStarted()
                         },
-                        Modifier.weight(1f), Icons.Play, enabled = canPrint,
+                        Modifier.fillMaxWidth(), Icons.Play, enabled = canPrint,
                     )
-                    QuietButton("Not now", onClose, Modifier.weight(1f))
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        QuietButton(
+                            "Print from OctoPrint",
+                            {
+                                vm.printFromOctoPrint(file)
+                                onStarted()
+                            },
+                            Modifier.weight(1.3f), enabled = canPrint,
+                        )
+                        QuietButton("Not now", onClose, Modifier.weight(1f))
+                    }
+                } else {
+                    Spacer(Modifier.weight(1f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SolidButton(
+                            "Start print",
+                            {
+                                vm.print(file)
+                                onStarted()
+                            },
+                            Modifier.weight(1f), Icons.Play, enabled = canPrint,
+                        )
+                        QuietButton("Not now", onClose, Modifier.weight(1f))
+                    }
                 }
             }
         }
