@@ -90,6 +90,39 @@ struct Outcome: Equatable {
     var kind: Kind
     var fileName: String
     var seconds: Int?
+    /// When it ended, if the phone saw it end. A done job is timed from when the printer stopped,
+    /// not from when OctoPrint had sent it the last line.
+    var at: Date?
+}
+
+/// A file going onto the printer's SD card through the Card Transfer plugin. OctoPrint lets go of
+/// the printer meanwhile, so it reads as offline. `bed` and `nozzle` are what is heating for the
+/// print that follows (`printAfter`), if anything.
+struct CardCopy: Equatable {
+    var name: String
+    /// 0...1
+    var fraction: Double
+    var printAfter = false
+    var bed: Int?
+    var nozzle: Int?
+
+    /// The plugin's account of a copy: {name, fraction, print_after, heating: {bed, tool0}}.
+    /// Nil without a name.
+    init?(_ o: JSON?) {
+        guard let o, let name = o.str("name"), !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let heating = o.obj("heating")
+        func degrees(_ key: String) -> Int? { heating?.dbl(key).flatMap { $0 > 0 ? Int($0) : nil } }
+        self.init(name: name, fraction: o.dbl("fraction") ?? 0, printAfter: o.bool("print_after") ?? false,
+                  bed: degrees("bed"), nozzle: degrees("tool0"))
+    }
+
+    init(name: String, fraction: Double, printAfter: Bool = false, bed: Int? = nil, nozzle: Int? = nil) {
+        self.name = name
+        self.fraction = min(max(fraction, 0), 1)
+        self.printAfter = printAfter
+        self.bed = bed
+        self.nozzle = nozzle
+    }
 }
 
 struct PrintFile: Identifiable, Hashable {

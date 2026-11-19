@@ -86,7 +86,7 @@ struct StatusView: View {
         case .cancelling: return "Cancelling"
         case .finishing: return "Finishing"
         case .ready: return session.outcome == nil ? "Ready" : "Finished"
-        case .offline: return "Printer offline"
+        case .offline: return session.cardCopy == nil ? "Printer offline" : "Copying to SD card"
         case .error: return "Printer error"
         case .connecting: return "Connecting the printer"
         }
@@ -96,7 +96,10 @@ struct StatusView: View {
 
     @ViewBuilder
     private var summary: some View {
-        if let o = session.outcome, !busy {
+        // OctoPrint calls the printer offline while it takes a file onto its card
+        if let copy = session.cardCopy, !busy, phase != .error {
+            CopyingCard(copy: copy)
+        } else if let o = session.outcome, !busy {
             FinishedCard(outcome: o, dismiss: session.dismissOutcome)
         } else if let p = session.printer, p.phase.busy {
             JobCard(session: session, printer: p)
@@ -183,13 +186,20 @@ private struct JobCard: View {
                         .contentTransition(.numericText())
                     if layers.known, let l = layers.current, let t = layers.total { Text("Layer \(l) of \(t)") }
                     Spacer()
-                    if let z = printer.currentZ, z > 0 { Text(String(format: "Z %.2f mm", z)) }
+                    if let z = session.nozzleHeight, z > 0 { Text(String(format: "Z %.2f mm", z)) }
                 }
                 .font(.meta).foregroundStyle(Ink.soft).monospacedDigit()
                 .animation(.smooth, value: printer.fraction)
             }
         }
         .panel(padding: 18)
+        // the part drawing follows the nozzle while it is on screen; the camera doesn't
+        .task {
+            while !Task.isCancelled {
+                session.followNozzle()
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 }
 
@@ -271,7 +281,8 @@ private struct FinishedCard: View {
                 Text(prettyName(outcome.fileName)).font(.title).foregroundStyle(Ink.bone).lineLimit(2)
             }
             Text(done
-                 ? (outcome.seconds.map { "Took \(duration($0)). Clear the bed before the next one." } ?? "Clear the bed before the next one.")
+                 ? [outcome.seconds.map { "Took \(duration($0))." }, outcome.at.map { "Finished \(whenIs($0))." },
+                    "Clear the bed before the next one."].compactMap { $0 }.joined(separator: " ")
                  : "Check the printer before trying again.")
                 .font(.body).foregroundStyle(Ink.soft)
             Button(action: dismiss) { Label(done ? "Bed is clear" : "Done", systemImage: "checkmark") }
@@ -280,6 +291,40 @@ private struct FinishedCard: View {
         }
         .panel(padding: 18)
         .sensoryFeedback(.success, trigger: outcome)
+    }
+}
+
+/// A file going onto the printer's SD card. OctoPrint has handed the printer over for it and calls
+/// it offline, so this stands in for "Printer offline", without the button to connect, which would
+/// take the printer back in the middle of the copy.
+private struct CopyingCard: View {
+    let copy: CardCopy
+    @Environment(Prefs.self) private var prefs
+
+    var body: some View {
+        let heating = [copy.bed.map { "bed \($0)°" }, copy.nozzle.map { "nozzle \($0)°" }].compactMap { $0 }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Copying to SD card").font(.heroWord).foregroundStyle(Ink.bone)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Text(prettyName(copy.name)).font(.title).foregroundStyle(Ink.bone).lineLimit(2)
+            VStack(alignment: .leading, spacing: 8) {
+                ProgressTrack(fraction: copy.fraction, color: prefs.accent)
+                HStack(spacing: 12) {
+                    Text("\(Int((copy.fraction * 100).rounded()))%")
+                        .contentTransition(.numericText())
+                    Spacer()
+                    if copy.printAfter { Text("Prints from the card once copied") }
+                }
+                .font(.meta).foregroundStyle(Ink.soft).monospacedDigit()
+                .animation(.smooth, value: copy.fraction)
+            }
+            .padding(.top, 6)
+            if !heating.isEmpty {
+                Label("Heating: \(heating.joined(separator: ", "))", systemImage: "flame.fill")
+                    .font(.label).foregroundStyle(Ink.bone)
+            }
+        }
+        .panel(padding: 18)
     }
 }
 

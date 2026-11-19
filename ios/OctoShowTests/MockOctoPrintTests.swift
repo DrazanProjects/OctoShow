@@ -119,6 +119,93 @@ extension MockOctoPrintTests {
     }
 }
 
+extension MockOctoPrintTests {
+    private func scene(_ items: [String: String]) async {
+        let q = items.map { URLQueryItem(name: $0.key, value: $0.value) }
+        _ = try? await URLSession.shared.data(from: http.appending(path: "mock/set").appending(queryItems: q))
+    }
+
+    private func mock(_ path: String, _ items: [String: String]) async {
+        let q = items.map { URLQueryItem(name: $0.key, value: $0.value) }
+        _ = try? await URLSession.shared.data(from: http.appending(path: path).appending(queryItems: q))
+    }
+
+    /// A file going onto the printer's SD card, with the Card Transfer plugin: OctoPrint calls the
+    /// printer offline meanwhile. The session follows the copy as it goes and says when it fails.
+    @MainActor
+    func testACopyOntoTheCardIsFollowedToItsEnd() async throws {
+        await scene(["scene": "offline", "copying": "0.42", "copyprint": "1", "copyheat": "1"])
+        let session = PrinterSession(server: Server(name: "mock", apiKey: key, home: Route(base: http)), prefs: Prefs())
+        session.start()
+        defer { session.stop() }
+        try await until { session.cardCopy?.fraction == 0.42 }
+        XCTAssertEqual(session.cardCopy?.printAfter, true)
+        XCTAssertEqual(session.cardCopy?.bed, 60)
+        XCTAssertEqual(session.cardCopy?.nozzle, 150)
+        XCTAssertEqual(session.printer?.phase, .offline)
+
+        await mock("mock/copy", ["stage": "progress", "fraction": "0.8"])
+        try await until { session.cardCopy?.fraction == 0.8 }
+
+        await mock("mock/copy", ["stage": "failed", "error": "the printer stopped answering"])
+        try await until { session.cardCopy == nil }
+        XCTAssertTrue(session.notice?.contains("SD card failed: the printer stopped answering") == true, session.notice ?? "nothing said")
+    }
+
+    /// Asked about a file in OctoPrint's storage, the plugin says whether the card has it; the two
+    /// ways of printing one that it hasn't go to the plugin.
+    func testThePluginIsAskedWhetherTheCardHasTheFile() async throws {
+        await scene(["scene": "ready", "cardtransfer": "missing"])
+        let api = OctoApi(route: Route(base: http), apiKey: key)
+        let listed = try await api.files()
+        let file = try XCTUnwrap(listed.newestFirst.first)
+        let missing = await api.onCard(file)
+        XCTAssertEqual(missing, false)
+        try await api.copyToCardAndPrint(file)
+
+        await scene(["scene": "ready", "cardtransfer": "oncard"])
+        let there = await api.onCard(file)
+        XCTAssertEqual(there, true)
+
+        await scene(["scene": "ready"])
+        let none = await api.onCard(file)
+        XCTAssertNil(none, "without the plugin there is nothing to ask")
+        let copying = await api.cardCopy()
+        XCTAssertNil(copying)
+    }
+
+    /// OctoPrint calls a job done once its last line is in the printer, then says Finishing while
+    /// the printer works through what it holds, and only then Operational. Done is still done after
+    /// that, and it finished when the printer stopped.
+    @MainActor
+    func testAJobThatEndsThroughFinishingIsDoneWhenThePrinterStops() async throws {
+        await scene(["scene": "printing"])
+        let session = PrinterSession(server: Server(name: "mock", apiKey: key, home: Route(base: http)), prefs: Prefs())
+        session.start()
+        defer { session.stop() }
+        try await until { session.printer?.phase == .printing }
+
+        await scene(["scene": "finishing"])
+        try await until { session.printer?.phase == .finishing && session.outcome != nil }
+        let told = try XCTUnwrap(session.outcome?.at, "the end was seen, so it has a time")
+        try await until(within: .seconds(8)) { session.printer?.phase == .ready }
+        XCTAssertEqual(session.outcome?.kind, .done, "the job should still count as done")
+        let stopped = try XCTUnwrap(session.outcome?.at)
+        XCTAssertGreaterThan(stopped, told, "and say when the printer stopped, not when it was told")
+    }
+
+    @MainActor
+    private func until(within: Duration = .seconds(6), _ check: () -> Bool) async throws {
+        let end = ContinuousClock.now + within
+        while ContinuousClock.now < end {
+            if check() { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("waited \(within) in vain")
+        throw CancellationError()
+    }
+}
+
 /// What the socket has passed on from the display, waited on by a test.
 private actor Heard {
     private var seen: [DisplayStatus] = []

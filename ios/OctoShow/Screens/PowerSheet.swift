@@ -23,6 +23,10 @@ struct PowerSheet: View {
                 }
                 if let step = display?.step {
                     progress(step)
+                } else if session.cardCopy != nil {
+                    // the Pi is copying and the printer is taking it: the Echo Show would refuse
+                    Text("A file is going onto the printer’s SD card, so the power stays on until it’s there.")
+                        .font(.body).foregroundStyle(Ink.soft)
                 } else if printing {
                     whenDone
                 } else {

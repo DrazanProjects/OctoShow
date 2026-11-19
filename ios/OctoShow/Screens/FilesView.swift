@@ -130,16 +130,62 @@ private struct FolderList: View {
                 printed()
             }
         }
-        .confirmationDialog("Start this print?", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
-                            titleVisibility: .visible, presenting: confirming) { f in
-            Button("Print \(prettyName(f.display))") {
-                session.print(f)
-                printed()
+        .askToPrint(session: session, file: $confirming, started: printed)
+    }
+}
+
+/// Asks once before a print starts. With the Card Transfer plugin, and the printer's SD card
+/// lacking the file, it offers copying it there first, or printing it from OctoPrint after all.
+private struct AskToPrint: ViewModifier {
+    let session: PrinterSession
+    @Binding var file: PrintFile?
+    let started: () -> Void
+    @State private var asking: PrintFile?
+    @State private var onCard: Bool?
+
+    func body(content: Content) -> some View {
+        content
+            // the plugin is asked first, so the question is the right one from the start
+            .task(id: file?.id) {
+                guard let f = file else { return }
+                let answer = await session.onCard(f)
+                guard !Task.isCancelled, file?.id == f.id else { return }
+                onCard = answer
+                asking = f
             }
-            Button("Not now", role: .cancel) {}
-        } message: { _ in
-            Text("Check the bed is clear before you start.")
-        }
+            .confirmationDialog("Start this print?", isPresented: Binding(get: { asking != nil }, set: {
+                if !$0 {
+                    asking = nil
+                    file = nil
+                }
+            }), titleVisibility: .visible, presenting: asking) { f in
+                if onCard == false {
+                    Button("Copy to SD card and print") {
+                        session.copyToCardAndPrint(f)
+                        started()
+                    }
+                    Button("Print from OctoPrint") {
+                        session.printFromOctoPrint(f)
+                        started()
+                    }
+                } else {
+                    Button("Print \(prettyName(f.display))") {
+                        session.print(f)
+                        started()
+                    }
+                }
+                Button("Not now", role: .cancel) {}
+            } message: { _ in
+                Text(onCard == false
+                     ? "It isn’t on the printer’s SD card yet. Printing it from OctoPrint isn’t recommended. Check the bed is clear before you start."
+                     : "Check the bed is clear before you start.")
+            }
+    }
+}
+
+extension View {
+    fileprivate func askToPrint(session: PrinterSession, file: Binding<PrintFile?>, started: @escaping () -> Void) -> some View {
+        modifier(AskToPrint(session: session, file: file, started: started))
     }
 }
 
@@ -197,7 +243,7 @@ private struct FileSheet: View {
     let session: PrinterSession
     let file: PrintFile
     let started: () -> Void
-    @State private var asking = false
+    @State private var asking: PrintFile?
 
     private var canPrint: Bool { session.link == .online && session.printer?.phase == .ready }
 
@@ -221,7 +267,7 @@ private struct FileSheet: View {
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 8) {
-                Button { asking = true } label: { Label("Print", systemImage: "printer.fill") }
+                Button { asking = file } label: { Label("Print", systemImage: "printer.fill") }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(!canPrint)
                 if !canPrint {
@@ -236,15 +282,7 @@ private struct FileSheet: View {
         .presentationDetents([.large])
         .presentationBackground(Ink.panel)
         .presentationDragIndicator(.visible)
-        .confirmationDialog("Start this print?", isPresented: $asking, titleVisibility: .visible) {
-            Button("Print \(prettyName(file.display))") {
-                session.print(file)
-                started()
-            }
-            Button("Not now", role: .cancel) {}
-        } message: {
-            Text("Check the bed is clear before you start.")
-        }
+        .askToPrint(session: session, file: $asking, started: started)
     }
 }
 

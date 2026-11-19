@@ -17,6 +17,10 @@ enum LiveEvent {
     case printStarted
     /// A light was switched somewhere else.
     case lightChanged(pin: Int, percent: Int)
+    /// A copy onto the printer's SD card went wrong (`error` says how); the file is still in OctoPrint.
+    case cardCopyFailed(name: String, error: String)
+    /// The Card Transfer plugin switched the heaters off: they were heating for a print that didn't come.
+    case heatersOff(why: String)
 }
 
 /// What the push socket has to say, handed to the session on the main actor.
@@ -31,6 +35,10 @@ enum LiveUpdate {
     case nozzle([String])
     /// What the Echo Show display says about itself, through the OctoShow plugin.
     case display(DisplayStatus)
+    /// A file going onto the printer's SD card (the Card Transfer plugin), or none.
+    case cardCopy(CardCopy?)
+    /// How far that copy has got, when that is all the plugin says.
+    case cardCopyProgress(name: String, fraction: Double)
 }
 
 /// What the firmware starts each reading of the nozzle's real position with.
@@ -103,6 +111,9 @@ final class OctoLive: @unchecked Sendable {
                 lastHeard.gotData = true
                 await applyState(history, replaceTemps: true)
                 await send(.online)
+                // A copy onto the card is told as it goes; what was missed while this socket was
+                // down is asked for. No plugin, or no answer: no copy.
+                Task { [api, send] in await send(.cardCopy(await api.cardCopy())) }
             } else if let current = msg.obj("current") {
                 lastHeard.gotData = true
                 await applyState(current, replaceTemps: false)
@@ -205,7 +216,7 @@ final class OctoLive: @unchecked Sendable {
     private func applyEvent(_ e: JSON) async {
         let p = e.obj("payload")
         func ended(_ kind: Outcome.Kind) -> LiveEvent {
-            .printEnded(Outcome(kind: kind, fileName: p?.str("name") ?? "", seconds: p?.int("time")))
+            .printEnded(Outcome(kind: kind, fileName: p?.str("name") ?? "", seconds: p?.int("time"), at: Date()))
         }
         switch e.str("type") {
         case "PrintStarted":
@@ -240,6 +251,27 @@ final class OctoLive: @unchecked Sendable {
         case "octoshow":
             // the phone's own requests come back this way too, and are the display's business
             if data.str("type") == "display", let d = DisplayStatus(data.obj("display")) { await send(.display(d)) }
+        case "cardtransfer": await applyCardTransfer(data)
+        default: break
+        }
+    }
+
+    /// A copy onto the printer's SD card: started, how far it has got, and how it ended.
+    private func applyCardTransfer(_ d: JSON) async {
+        switch d.str("type") {
+        case "transfer":
+            switch d.str("stage") {
+            case "start": await send(.cardCopy(CardCopy(d)))
+            case "progress":
+                guard let name = d.str("name"), let fraction = d.dbl("fraction") else { return }
+                await send(.cardCopyProgress(name: name, fraction: fraction))
+            case "done": await send(.cardCopy(nil))
+            case "failed":
+                await send(.cardCopy(nil))
+                await send(.event(.cardCopyFailed(name: d.str("name") ?? "", error: d.str("error") ?? "")))
+            default: break
+            }
+        case "heaters_off": await send(.event(.heatersOff(why: d.str("why") ?? "")))
         default: break
         }
     }
@@ -266,7 +298,7 @@ final class OctoLive: @unchecked Sendable {
                 // OctoPrint takes text here as a pattern, and sends only the log lines it fits
                 "state": ["logs": nozzleMark, "messages": false],
                 "events": true,
-                "plugins": ["dashboard", "LightControls", "action_command_prompt", "octoshow"],
+                "plugins": ["dashboard", "LightControls", "action_command_prompt", "octoshow", "cardtransfer"],
             ] as JSON,
         ]
         return String(decoding: try! JSONSerialization.data(withJSONObject: o), as: UTF8.self)

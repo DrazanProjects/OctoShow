@@ -63,6 +63,10 @@ final class PrinterSession {
     /// hasn't the plugin, or no display has reported lately. Kept after OctoPrint goes quiet while
     /// the display was switching everything off, so the phone can say how that will have ended.
     private(set) var display: DisplayStatus?
+    /// A file going onto the printer's SD card (the Card Transfer plugin). OctoPrint has let go of
+    /// the printer meanwhile and calls it offline, so this is shown instead, and nothing may connect
+    /// to the printer until the copy is done.
+    private(set) var cardCopy: CardCopy?
     /// Where the nozzle really is, when the firmware says (REALPOS): the part drawing follows it.
     let nozzle = NozzleWatch()
     /// The parts this phone draws from G-code: the job's, as it is printed, and previews for
@@ -204,6 +208,12 @@ final class PrinterSession {
         case .event(let e): onEvent(e)
         case .nozzle(let lines): for line in lines { _ = nozzle.add(line: line) }
         case .display(let d): display = d
+        case .cardCopy(let c): cardCopy = c
+        case .cardCopyProgress(let name, let fraction):
+            // a copy whose start was missed (the socket came up during it) is picked up here
+            var known = cardCopy?.name == name ? cardCopy! : CardCopy(name: name, fraction: 0)
+            known.fraction = min(max(fraction, 0), 1)
+            cardCopy = known
         }
     }
 
@@ -238,7 +248,15 @@ final class PrinterSession {
            UserDefaults.standard.string(forKey: "clearedJob") != jobId(p) {
             outcome = Outcome(kind: .done, fileName: f.display, seconds: p.printTime)
         }
-        if p.phase.busy, outcome != nil { outcome = nil }
+        // A job running clears how the last one ended. Finishing and Cancelling don't: OctoPrint
+        // calls a job done once its last line is in the printer and then waits in Finishing while
+        // the printer works through what it holds, and it says a job was cancelled just before
+        // it goes back to Operational. Both are the end of the job just told of.
+        if outcome != nil, p.phase.busy, p.phase != .finishing, p.phase != .cancelling { outcome = nil }
+        // It finished when the printer stopped, not when OctoPrint ran out of lines to send.
+        if before == .finishing, p.phase == .ready, outcome?.kind == .done, outcome?.at != nil {
+            outcome?.at = Date()
+        }
         if p.phase == .ready, before != .ready { wantFiles() }
         shared.busy = p.phase.busy
         trackJobFile(p)
@@ -289,6 +307,13 @@ final class PrinterSession {
             if filesWanted || printer?.phase == .ready { refreshFiles() }
         case .lightChanged(let pin, let percent):
             info.lights = info.lights.map { var l = $0; if l.pin == pin { l.percent = percent }; return l }
+        case .cardCopyFailed(let name, let error):
+            let what = ["Copying \(prettyName(name)) to the SD card failed", error.trimmingCharacters(in: .whitespaces)]
+                .filter { !$0.isEmpty }.joined(separator: ": ")
+            say("\(what). It is still in OctoPrint.")
+        case .heatersOff(let why):
+            let reason = why.trimmingCharacters(in: .whitespaces)
+            say("Heaters switched off: \(reason.isEmpty ? "nothing came to use them" : reason).")
         }
     }
 
@@ -415,6 +440,45 @@ final class PrinterSession {
     func resume() { act { try await $0.resume() } }
     func cancel() { act { try await $0.cancel() } }
     func print(_ file: PrintFile) { act { try await $0.print(file) } }
+
+    /// Whether the printer's SD card has `file` (the Card Transfer plugin). A file on the card
+    /// prints from it; one that isn't gets a choice before it starts. Nil when there is nothing to ask.
+    func onCard(_ file: PrintFile) async -> Bool? {
+        guard file.origin != sdCard, let octo = api else { return nil }
+        return await octo.onCard(file)
+    }
+
+    func copyToCardAndPrint(_ file: PrintFile) {
+        guard let octo = api else { return say("Not connected to OctoPrint.") }
+        Task {
+            do {
+                try await octo.copyToCardAndPrint(file)
+                say("Copying it to the printer’s SD card. The print starts once it’s there.")
+            } catch {
+                say(forPeople(error))
+            }
+        }
+    }
+
+    func printFromOctoPrint(_ file: PrintFile) { act { try await $0.printFromOctoPrint(file) } }
+
+    /// The layer the nozzle is really on, brought up to date for something that shows it while
+    /// the part drawing, which does this every frame, may be off screen.
+    func followNozzle() {
+        guard let file = jobDrawing ?? jobFile else { return }
+        let layers = layers
+        nozzle.follow(library: parts, file: PartFile(file), sent: layers.known ? layers.current : nil,
+                      fromCard: jobFile?.origin == sdCard)
+    }
+
+    /// How high the nozzle is, for a running job: the height of the layer it is really on when that
+    /// is followed. OctoPrint's own figure is that of the last move it sent: ahead of the nozzle, up
+    /// in the air on every Z-hop, and of a file the printer reads from its SD card there is none.
+    var nozzleHeight: Double? {
+        if nozzle.layer != nil { return nozzle.height.map(Double.init) }
+        if jobFile?.origin == sdCard { return nil }
+        return printer?.currentZ
+    }
 
     /// Put the finished job away so the status screen goes back to "Ready".
     func dismissOutcome() {

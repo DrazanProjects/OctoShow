@@ -256,6 +256,40 @@ final class OctoApi: @unchecked Sendable {
         try await send("api/plugin/octoshow", ["command": "power", "action": action])
     }
 
+    /* ---------------- the printer's SD card (the Card Transfer plugin) ---------------- */
+
+    /// Whether the printer's SD card has the same file as `file` in OctoPrint's storage, as the
+    /// Card Transfer plugin sees it. Nil when there is no such plugin, or it has its check
+    /// switched off: then printing works as it always did.
+    func onCard(_ file: PrintFile) async -> Bool? {
+        let r = request(url("api/plugin/cardtransfer", query: [URLQueryItem(name: "card", value: file.path)]), timeout: 6)
+        guard let (data, response) = try? await raw(r), response.statusCode == 200,
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? JSON
+        else { return nil }
+        if o.bool("print_check") == false { return nil }
+        return o.bool("on_card") ?? false
+    }
+
+    /// The copy onto the card under way, if any: for when the push messages about it were missed.
+    func cardCopy() async -> CardCopy? {
+        let r = request(url("api/plugin/cardtransfer", query: [URLQueryItem(name: "copy", value: "")]), timeout: 6)
+        guard let (data, response) = try? await raw(r), response.statusCode == 200,
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? JSON
+        else { return nil }
+        return CardCopy(o.obj("copying"))
+    }
+
+    /// Copies `file` onto the printer's SD card the fast way, and prints it from there once it's on.
+    func copyToCardAndPrint(_ file: PrintFile) async throws {
+        try await send("api/plugin/cardtransfer", ["command": "send_and_print", "path": file.path])
+    }
+
+    /// Prints `file` from OctoPrint after all, though the card hasn't got it: allowed once, then started.
+    func printFromOctoPrint(_ file: PrintFile) async throws {
+        try await send("api/plugin/cardtransfer", ["command": "allow_local", "path": file.path])
+        try await print(file)
+    }
+
     /* ---------------- plumbing ---------------- */
 
     func send(_ path: String, _ body: JSON) async throws {
@@ -300,7 +334,7 @@ func forPeople(_ error: Error) -> String {
         switch e.code {
         case 401, 403: return "OctoPrint turned down this phone's access key."
         case 404: return "OctoPrint couldn't find that."
-        case 409: return "The printer can't do that right now."
+        case 409: return e.detail.contains("SD card") ? "That file isn’t on the printer’s SD card yet." : "The printer can't do that right now."
         default: return "OctoPrint answered with an error (\(e.code))."
         }
     }

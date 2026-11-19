@@ -227,3 +227,27 @@ final class SwitchOffStoryTests: XCTestCase {
         XCTAssertFalse(PowerStepInfo(kind: .failed).underWay)
     }
 }
+
+final class CardCopyTests: XCTestCase {
+    func testReadsTheCardTransferPluginsAccountOfACopy() throws {
+        let o: JSON = ["name": "benchy.gcode", "fraction": 0.42, "print_after": true, "heating": ["bed": 60, "tool0": 150.0]]
+        let c = try XCTUnwrap(CardCopy(o))
+        XCTAssertEqual(c, CardCopy(name: "benchy.gcode", fraction: 0.42, printAfter: true, bed: 60, nozzle: 150))
+    }
+
+    func testNothingHeatingAndOddFiguresAreTakenCalmly() throws {
+        let c = try XCTUnwrap(CardCopy(["name": "cube.gcode", "fraction": "1.7", "heating": ["bed": 0]]))
+        XCTAssertEqual(c.fraction, 1, "kept within 0...1")
+        XCTAssertNil(c.bed, "a heater at 0 isn't heating")
+        XCTAssertNil(c.nozzle)
+        XCTAssertFalse(c.printAfter)
+        XCTAssertNil(CardCopy(["fraction": 0.5]), "a copy of nothing is no copy")
+        XCTAssertNil(CardCopy(nil))
+    }
+
+    func testARefusalForAFileNotOnTheCardSaysSo() {
+        XCTAssertEqual(forPeople(OctoHttpError(code: 409, detail: "The file is not on the printer's SD card")),
+                       "That file isn’t on the printer’s SD card yet.")
+        XCTAssertEqual(forPeople(OctoHttpError(code: 409, detail: "Printer is not operational")), "The printer can't do that right now.")
+    }
+}
