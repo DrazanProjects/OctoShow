@@ -13,8 +13,12 @@
         android:theme="@style/Theme.OctoShow"
         android:usesCleartextTraffic="true">
 
+        <!-- directBootAware: as the home screen it is started while the Echo Show is still
+             booting, in place of Android's own blank stand-in. MainActivity shows only the boot
+             picture until the app's storage is unlocked, and starts properly then. -->
         <activity
             android:name=".MainActivity"
+            android:directBootAware="true"
             android:exported="true"
             android:screenOrientation="landscape"
             android:windowSoftInputMode="adjustResize"

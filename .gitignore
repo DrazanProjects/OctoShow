@@ -11,6 +11,9 @@
 .cxx
 local.properties
 
+# boot screen: the boot animation and preview frames make_boot_screen.py draws
+tools/boot-screen/build/
+
 # mock OctoPrint: dependencies and its throwaway localhost certificate
 tools/mock-octoprint/node_modules/
 *.pem

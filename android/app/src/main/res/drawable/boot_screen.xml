@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What the app shows while it starts: the picture the Echo Show's boot animation ends on,
+    pixel for pixel and in the same place, so the boot runs straight into the app.
+    boot_logo.png is drawn by tools/boot-screen/make_boot_screen.py; it sits in drawable-nodpi
+    so it is never scaled, and it is an even size so it centres to the pixel.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/black" />
+    <item>
+        <bitmap android:src="@drawable/boot_logo" android:gravity="center" />
+    </item>
+</layer-list>

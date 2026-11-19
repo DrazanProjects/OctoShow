@@ -210,6 +210,30 @@ adb shell locksettings set-disabled true
 The first makes OctoShow the home app, so the Echo Show starts straight into it. The
 second removes the lock screen that would otherwise sit in front of it.
 
+### Boot screen (optional)
+
+OctoShow starts while Android is still booting and shows its logo until OctoPrint
+answers, so the boot runs straight into the dashboard. The animation before that is
+LineageOS's. To replace it with OctoShow's, which ends on the same picture in the same
+place, draw it (this needs Python with Pillow) and copy it over the stock one. Copying
+it needs root over adb, so first turn on Rooted debugging in the developer options.
+
+```
+python ..\tools\boot-screen\make_boot_screen.py
+adb root
+adb shell mount -o rw,remount /
+adb shell cp -p /system/media/bootanimation.zip /system/media/bootanimation-lineage.zip
+adb push ..\tools\boot-screen\build\bootanimation.zip /data/local/tmp/
+adb shell "cp /data/local/tmp/bootanimation.zip /system/media/ && chmod 644 /system/media/bootanimation.zip && chcon u:object_r:system_file:s0 /system/media/bootanimation.zip && rm /data/local/tmp/bootanimation.zip"
+adb shell mount -o ro,remount /
+adb unroot
+```
+
+The stock animation plays its ending through after Android is ready, and Android
+waits for it. OctoShow's stops right away, so the Echo Show also boots several
+seconds sooner. The stock one stays beside it as `bootanimation-lineage.zip`: copy
+it back the same way to undo this. Reinstalling LineageOS also puts it back.
+
 ### First run
 
 The display looks for OctoPrint on the network and lists what it finds. Touch

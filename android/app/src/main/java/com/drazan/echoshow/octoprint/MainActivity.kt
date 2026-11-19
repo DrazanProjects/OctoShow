@@ -1,10 +1,15 @@
 package com.drazan.echoshow.octoprint
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.res.Resources
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.SystemClock
+import android.os.UserManager
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -15,19 +20,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.Color
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.drazan.echoshow.octoprint.octo.Link
 import com.drazan.echoshow.octoprint.power.PowerStep
 import com.drazan.echoshow.octoprint.ui.App
 import com.drazan.echoshow.octoprint.ui.theme.paletteOf
 import com.drazan.echoshow.octoprint.ui.theme.usePalette
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
 
@@ -39,6 +49,17 @@ class MainActivity : ComponentActivity() {
     /** The touch that wakes the screen shouldn't also press whatever is under it. */
     private var swallowGesture = false
 
+    /** Whether the app proper is up: at boot it waits for its storage to be unlocked. */
+    private var started = false
+    private var unlockWatch: BroadcastReceiver? = null
+
+    /**
+     * Started at boot, the app is up before the Echo Show has joined Wi-Fi. Rather than open
+     * on "Can't reach OctoPrint", it keeps the boot picture until OctoPrint first answers, or
+     * [BOOT_HOLD_MS] at most.
+     */
+    private var holdingBootPicture by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -47,6 +68,47 @@ class MainActivity : ComponentActivity() {
         // hide status + nav bars; swipe-from-edge briefly shows them
         WindowCompat.setDecorFitsSystemWindows(window, false)
         hideBars()
+
+        // As the home screen this is started while the Echo Show is still booting, before
+        // the app's own storage (saved server, plug, display settings) is unlocked. Until
+        // then the window background shows the picture the boot animation ended on, and
+        // nothing here may touch storage.
+        if (storageUnlocked()) start() else waitForUnlock()
+    }
+
+    private fun storageUnlocked() = getSystemService(UserManager::class.java).isUserUnlocked
+
+    private fun waitForUnlock() {
+        holdingBootPicture = true
+        val watch = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = startOnce()
+        }
+        unlockWatch = watch
+        ContextCompat.registerReceiver(
+            this, watch, IntentFilter(Intent.ACTION_USER_UNLOCKED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        // it may have opened between the check and the registration
+        if (storageUnlocked()) startOnce()
+    }
+
+    private fun startOnce() {
+        stopWatching()
+        if (!started) start()
+    }
+
+    private fun stopWatching() {
+        unlockWatch?.let { unregisterReceiver(it) }
+        unlockWatch = null
+    }
+
+    override fun onDestroy() {
+        stopWatching()
+        super.onDestroy()
+    }
+
+    private fun start() {
+        started = true
+        if (!holdingBootPicture) dropBootPicture()
 
         provisionFrom(intent)
 
@@ -64,19 +126,40 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            // a finished print or a question from the printer is worth lighting up for,
-            // and so is a switch-off that left everything on
-            val stillOn = vm.power is PowerStep.Failed
-            LaunchedEffect(vm.outcome, vm.prompt, stillOn) {
-                if (vm.outcome != null || vm.prompt != null || stillOn) wake()
+            if (holdingBootPicture) {
+                // nothing composed: the window background, the boot picture, shows through
+                LaunchedEffect(Unit) {
+                    withTimeoutOrNull(BOOT_HOLD_MS) { snapshotFlow { heardBack() }.first { it } }
+                    dropBootPicture()
+                    holdingBootPicture = false
+                }
+            } else {
+                // a finished print or a question from the printer is worth lighting up for,
+                // and so is a switch-off that left everything on
+                val stillOn = vm.power is PowerStep.Failed
+                LaunchedEffect(vm.outcome, vm.prompt, stillOn) {
+                    if (vm.outcome != null || vm.prompt != null || stillOn) wake()
+                }
+                App(vm, screenOff)
             }
-            App(vm, screenOff)
         }
+    }
+
+    /** Whether the app has something better to show than the boot picture. */
+    private fun heardBack(): Boolean {
+        if (!vm.ready) return false
+        if (vm.server == null) return true          // nothing set up yet: the setup screen
+        return vm.link != Link.Connecting && vm.link != Link.Unreachable
+    }
+
+    /** The boot picture has done its job; anything the app leaves undrawn is black, as before. */
+    private fun dropBootPicture() {
+        window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.BLACK))
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        provisionFrom(intent)
+        if (started) provisionFrom(intent)
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -155,5 +238,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val LOWEST_BRIGHTNESS = 0.01f
+        /** Long enough for Wi-Fi and OctoPrint after a boot; past it, the app says what's wrong. */
+        const val BOOT_HOLD_MS = 20_000L
     }
 }
