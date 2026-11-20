@@ -93,6 +93,18 @@ fun filamentWeight(cm3: Double): String {
     return (if (grams < 10) "%.1f g" else "%.0f g").format(grams)
 }
 
+/** Storage in the binary units OctoPrint's own pages use: "6.1 GB", "850 MB". */
+fun storageSize(bytes: Long): String {
+    val kb = bytes / 1024.0
+    val mb = kb / 1024
+    val gb = mb / 1024
+    return when {
+        gb >= 1 -> "%.1f GB".format(gb)
+        mb >= 1 -> "%.0f MB".format(mb)
+        else -> "%.0f KB".format(kb)
+    }
+}
+
 /** A part's size in millimetres, height last, to a tenth for the smallest. */
 fun partSize(long: Float, broad: Float, high: Float): String =
     listOf(long, broad, high).joinToString(" × ") { if (it < 10f) "%.1f".format(it) else "%.0f".format(it) } + " mm"

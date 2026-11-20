@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.drazan.echoshow.octoprint.PrinterViewModel
+import com.drazan.echoshow.octoprint.octo.CardSpace
 import com.drazan.echoshow.octoprint.octo.Phase
 import com.drazan.echoshow.octoprint.octo.PrintFile
 import com.drazan.echoshow.octoprint.ui.components.Icon
@@ -45,6 +47,7 @@ import com.drazan.echoshow.octoprint.ui.duration
 import com.drazan.echoshow.octoprint.ui.filamentWeight
 import com.drazan.echoshow.octoprint.ui.prettyName
 import com.drazan.echoshow.octoprint.ui.rememberPreview
+import com.drazan.echoshow.octoprint.ui.storageSize
 import com.drazan.echoshow.octoprint.ui.theme.Ink
 import com.drazan.echoshow.octoprint.ui.theme.LocalDisplay
 import com.drazan.echoshow.octoprint.ui.theme.T
@@ -97,36 +100,69 @@ fun FilesScreen(vm: PrinterViewModel, onAskPrint: (PrintFile) -> Unit) {
             }
             Spacer(Modifier.height(4.dp))
 
-            when {
-                entries.isNotEmpty() -> LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(entries, key = { it.origin + ":" + it.path }) { f ->
-                        FileRow(
-                            vm = vm,
-                            file = f,
-                            selected = f == chosen,
-                            onClick = { if (f.isFolder) trail = trail + f.path else chosenPath = f.path },
-                        )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    entries.isNotEmpty() -> LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(entries, key = { it.origin + ":" + it.path }) { f ->
+                            FileRow(
+                                vm = vm,
+                                file = f,
+                                selected = f == chosen,
+                                onClick = { if (f.isFolder) trail = trail + f.path else chosenPath = f.path },
+                            )
+                        }
                     }
+                    state.loading -> Hint("Reading the file list from OctoPrint. A big library takes a few seconds.")
+                    state.error != null -> Column(Modifier.padding(8.dp)) {
+                        T(state.error, Type.Body)
+                        Spacer(Modifier.height(14.dp))
+                        QuietButton("Try again", vm::refreshFiles, icon = Icons.Refresh)
+                    }
+                    folders.isNotEmpty() -> Hint("This folder is empty.")
+                    else -> Hint("Nothing here yet. Send a file from your slicer and it will show up.")
                 }
-                state.loading -> Hint("Reading the file list from OctoPrint. A big library takes a few seconds.")
-                state.error != null -> Column(Modifier.padding(8.dp)) {
-                    T(state.error, Type.Body)
-                    Spacer(Modifier.height(14.dp))
-                    QuietButton("Try again", vm::refreshFiles, icon = Icons.Refresh)
-                }
-                folders.isNotEmpty() -> Hint("This folder is empty.")
-                else -> Hint("Nothing here yet. Send a file from your slicer and it will show up.")
             }
+
+            // with the Card Transfer plugin: how full the printer's SD card is
+            vm.card?.space?.let { CardUsage(it) }
         }
 
         Spacer(Modifier.width(22.dp))
 
         Column(Modifier.weight(1f).fillMaxHeight().padding(top = 6.dp)) {
             if (chosen != null) Detail(vm, chosen, onAskPrint)
+        }
+    }
+}
+
+/**
+ * How full the printer's SD card is, under the file list: a bar across its width for what is used,
+ * with the figures above it. It turns amber once the card is over 90% full.
+ */
+@Composable
+private fun CardUsage(space: CardSpace) {
+    val full = (space.used.toFloat() / space.total).coerceIn(0f, 1f)
+    Column(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.SdCard, Ink.Bone, size = 18.dp)
+            Spacer(Modifier.width(8.dp))
+            T("SD card", Type.Meta, color = Ink.Bone, maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            T("${storageSize(space.used)} used · ${storageSize(space.free)} free", Type.Meta, color = Ink.Faint, maxLines = 1)
+        }
+        Spacer(Modifier.height(7.dp))
+        Box(Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(Ink.Line)) {
+            // a card with anything on it shows at least a dot, however small a share that is
+            if (space.used > 0) {
+                Box(
+                    Modifier.widthIn(min = 8.dp).fillMaxWidth(full).fillMaxHeight().clip(CircleShape)
+                        .background(if (full > 0.9f) Ink.Warn else Ink.Bone)
+                )
+            }
         }
     }
 }
@@ -140,6 +176,7 @@ private fun Hint(text: String) {
 private fun FileRow(vm: PrinterViewModel, file: PrintFile, selected: Boolean, onClick: () -> Unit) {
     val clock24 = LocalDisplay.current.clock24
     val thumb = rememberPreview(vm, file).value.picture
+    val onCard = !file.isFolder && vm.card?.files?.containsKey(file.path) == true
     Row(
         Modifier.fillMaxWidth().height(68.dp).tap(onClick = onClick).clip(RoundedCornerShape(16.dp))
             .background(if (selected) Ink.PanelHi else Color.Transparent)
@@ -163,9 +200,14 @@ private fun FileRow(vm: PrinterViewModel, file: PrintFile, selected: Boolean, on
         }
         if (file.isFolder) {
             Icon(Icons.Right, Ink.Faint, size = 20.dp)
-        } else if (file.lastPrintSuccess != null) {
-            // how the last attempt at this file went
-            Box(Modifier.size(8.dp).clip(CircleShape).background(if (file.lastPrintSuccess) Ink.Ok else Ink.Bad))
+        } else {
+            // on the printer's SD card too, so it prints from there
+            if (onCard) Icon(Icons.SdCard, Ink.Bone, size = 20.dp)
+            if (file.lastPrintSuccess != null) {
+                if (onCard) Spacer(Modifier.width(10.dp))
+                // how the last attempt at this file went
+                Box(Modifier.size(8.dp).clip(CircleShape).background(if (file.lastPrintSuccess) Ink.Ok else Ink.Bad))
+            }
         }
         Spacer(Modifier.width(6.dp))
     }
@@ -180,6 +222,17 @@ private fun ColumnScope.Detail(vm: PrinterViewModel, file: PrintFile, onAskPrint
     ModelPreview(shown.picture, reveal = null, modifier = Modifier.fillMaxWidth().weight(1f), note = shown.note)
     Spacer(Modifier.height(14.dp))
     T(prettyName(file.display), Type.Title, maxLines = 2)
+    // with the Card Transfer plugin: whether it prints from the printer's SD card
+    vm.card?.let { card ->
+        val there = card.files.containsKey(file.path)
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.SdCard, if (there) Ink.Bone else Ink.Faint, size = 18.dp)
+            Spacer(Modifier.width(8.dp))
+            T(if (there) "On the printer’s SD card" else "Not on the printer’s SD card yet", Type.Meta,
+                color = if (there) Ink.Bone else Ink.Faint, maxLines = 1)
+        }
+    }
     Spacer(Modifier.height(10.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(26.dp)) {
         file.estimatedPrintTime?.let { Figure("Print time", duration(it.toLong())) }

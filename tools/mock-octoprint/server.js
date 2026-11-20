@@ -28,9 +28,12 @@
 // GET /mock/sent lists the requests that came through the plugin, among the rest.
 //
 // Add &cardtransfer=oncard or &cardtransfer=missing for the Card Transfer plugin (OctoPrint-CardTransfer):
-// asked about a file in OctoPrint's storage, it says the printer's SD card has it, or hasn't. Its
-// commands (send_and_print, allow_local, send_to_card) are listed by GET /mock/sent. Without it,
-// the plugin isn't installed.
+// asked about a file in OctoPrint's storage, it says the printer's SD card has it, or hasn't. With
+// oncard the card has the newest file and every other one after it, with missing the others (so the
+// newest isn't on it). Asked for all of them (?cards), it lists those, with the card's size and free
+// space. Its commands (send_and_print, allow_local, send_to_card) are listed by GET /mock/sent.
+// GET /mock/space?free=<bytes>[&total=<bytes>] tells the display the card's space has changed
+// (?free=none: no card). Without it, the plugin isn't installed.
 // Add &copying=0.42 (how far) to have it copying a file onto the card, the printer offline meanwhile
 // as OctoPrint has it, with &copyprint=1 for a print to follow and &copyheat=1 for the bed and nozzle
 // heating for it. GET /mock/copy?stage=progress&fraction=0.8 (or done, failed, heaters_off) tells
@@ -427,6 +430,7 @@ function scene(name, q) {
   S.sd = q.sd === '1';
   S.sdName = q.sdname || null;
   S.cardTransfer = ['oncard', 'missing'].includes(q.cardtransfer) ? q.cardtransfer : null;
+  S.cardSpace = { ...CARD_SPACE };
   S.copy = q.copying !== undefined
     ? { name: (FILES[+(q.file ?? 0)] || FILES[0]).name, fraction: +q.copying || 0, print_after: q.copyprint === '1',
         heating: q.copyheat === '1' ? { bed: 60, tool0: 150 } : null }
@@ -465,6 +469,22 @@ function scene(name, q) {
   if (name === 'done') event('PrintDone', { name: S.file.name, path: S.file.name, origin: 'local', size: 1, time: S.total });
   if (S.copy) plugin('cardtransfer', { type: 'transfer', stage: 'start', name: S.copy.name, heating: S.copy.heating, print_after: S.copy.print_after });
   if (S.copy) plugin('cardtransfer', { type: 'transfer', stage: 'progress', name: S.copy.name, fraction: S.copy.fraction });
+}
+
+// The Card Transfer plugin's account of the printer's SD card: which of the files it has (the newest
+// and every other one after it with oncard, the others with missing), by the card's short names
+function cardFiles() {
+  const pick = S.cardTransfer === 'oncard' ? 0 : 1;
+  const files = {};
+  FILES.forEach((f, i) => {
+    if (i % 2 === pick) files[f.name] = f.name.replace(/\.gcode$/, '').replace(/[ .()]/g, '').slice(0, 6).toUpperCase() + '~1.GCO';
+  });
+  return files;
+}
+const CARD_SPACE = { total: 7_948_206_080, free: 6_120_013_824, cluster: 32768 };
+function cardSpace() {
+  const c = S.cardSpace;
+  return c ? { ...c, used: c.total - c.free, when: Math.floor(now()) } : null;
 }
 
 // The Card Transfer plugin's copy going on, or ending: the printer comes back when it ends
@@ -533,6 +553,13 @@ const handler = async (req, res) => {
   if (p === '/mock/set') { scene(u.searchParams.get('scene') || 'printing', Object.fromEntries(u.searchParams)); return json(res, 200, { ok: true, phase: S.phase }); }
   if (p === '/mock/copy') { copyGoesOn(Object.fromEntries(u.searchParams)); return json(res, 200, { ok: true, copy: S.copy }); }
   if (p === '/mock/sent') { const sent = S.sent; S.sent = []; return json(res, 200, sent); }
+  if (p === '/mock/space') {
+    const free = u.searchParams.get('free');
+    S.cardSpace = free === 'none' ? null
+      : { ...(S.cardSpace || CARD_SPACE), free: +free, total: +(u.searchParams.get('total') || (S.cardSpace || CARD_SPACE).total) };
+    plugin('cardtransfer', { type: 'space', space: cardSpace() });
+    return json(res, 200, { ok: true, space: cardSpace() });
+  }
 
   // the smart plug: Tasmota's web command page. A separate device in real life, so it
   // answers without a key and goes on answering when the Pi is off.
@@ -757,10 +784,14 @@ const handler = async (req, res) => {
   if (p === '/api/plugin/cardtransfer') {
     if (!S.cardTransfer) return json(res, 404, {});
     if (req.method === 'GET' && u.searchParams.has('copy')) return json(res, 200, { copying: S.copy, queued: [] });
+    // while a copy runs, OctoPrint has let go of the printer and can't say what is on its card
+    if (req.method === 'GET' && u.searchParams.has('cards')) {
+      return json(res, 200, { card_ready: !S.copy, files: S.copy ? null : cardFiles(), space: cardSpace() });
+    }
     if (req.method === 'GET') {
       const card = u.searchParams.get('card') || '';
-      const on = S.cardTransfer === 'oncard';
-      return json(res, 200, { path: card, on_card: on, card_name: on ? 'CARDFI~1.GCO' : null, print_check: true });
+      const name = cardFiles()[card] || null;
+      return json(res, 200, { path: card, on_card: !!name, card_name: name, print_check: true });
     }
     const b = await body(req);
     if (!['send_and_print', 'allow_local', 'send_to_card'].includes(b.command)) return json(res, 400, { error: 'Unknown command' });

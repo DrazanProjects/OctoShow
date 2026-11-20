@@ -44,6 +44,8 @@ sealed interface LiveEvent {
     data class CardCopyFailed(val name: String, val error: String) : LiveEvent
     /** The Card Transfer plugin switched the heaters off: they were heating for a print that didn't come. */
     data class HeatersOff(val why: String) : LiveEvent
+    /** The printer's SD card has a new size or free space (or none: no card). */
+    data class CardSpaceChanged(val space: CardSpace?) : LiveEvent
 }
 
 /**
@@ -304,6 +306,7 @@ class OctoLive(private val api: OctoApi) {
                 }
             }
             "heaters_off" -> events.tryEmit(LiveEvent.HeatersOff(d.str("why").orEmpty()))
+            "space" -> events.tryEmit(LiveEvent.CardSpaceChanged(d.optJSONObject("space")?.let(::parseCardSpace)))
         }
     }
 

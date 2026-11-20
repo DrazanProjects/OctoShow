@@ -100,6 +100,20 @@ data class CardCopy(
     val nozzle: Int? = null,
 )
 
+/** The printer's SD card: its size and free space in bytes, as the printer's firmware counted them. */
+data class CardSpace(val total: Long, val free: Long) {
+    val used: Long get() = (total - free).coerceAtLeast(0)
+}
+
+/**
+ * What the printer's SD card has of OctoPrint's files ([files]: path in OctoPrint's storage -> the
+ * card's name for its copy) and how full it is, as the Card Transfer plugin knows them.
+ */
+data class CardState(val files: Map<String, String> = emptyMap(), val space: CardSpace? = null)
+
+/** The Card Transfer plugin's answer about the card: [files] is null while it can't say (during a copy). */
+data class CardReport(val files: Map<String, String>?, val space: CardSpace?)
+
 /** How the last job ended, kept until the next one starts. */
 data class Outcome(
     val kind: Kind,

@@ -88,6 +88,23 @@ class ScreenshotIdleTest : ScreenWalk(5002) {
         tap(a, 38f, 104f)          // the files again, as the walk had them
         settle(1200)
 
+        // With the Card Transfer plugin, the files that the printer's SD card has too are marked,
+        // and the header says how much of the card is used and free
+        scene("ready", "cardtransfer=oncard")
+        settleUntil(5000, after = 300) { vm.isIn(Phase.READY) }
+        tap(a, 38f, 164f)          // away to the controls...
+        settle(600)
+        tap(a, 38f, 104f)          // ...and back: the file list asks the plugin again
+        settleUntil(7000, after = 1000) { vm.card?.space != null && vm.files.loaded && !vm.files.loading }
+        shot(a, "13b-files-on-card", load = 1500)
+        assertEquals("the newest file and every other one after it are on the card", 3, vm.card?.files?.size)
+        get("$mock/mock/space?free=500000000")
+        settleUntil(3000, after = 300) { vm.card?.space?.free == 500_000_000L }
+        assertEquals("a change in the card's space is told as it happens", 500_000_000L, vm.card?.space?.free)
+        shot(a, "13c-files-card-nearly-full")      // over 90% used: the bar turns amber
+        scene("ready")
+        settleUntil(5000, after = 300) { vm.isIn(Phase.READY) }
+
         // controls, idle and mid-print
         tap(a, 38f, 164f)
         settle(1200)

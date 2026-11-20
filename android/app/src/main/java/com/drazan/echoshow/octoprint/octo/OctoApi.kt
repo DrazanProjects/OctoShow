@@ -328,6 +328,18 @@ class OctoApi(
         }
     }
 
+    /**
+     * Which of OctoPrint's files the printer's SD card has, and the card's size and free space (the
+     * Card Transfer plugin, 1.4 on). Null without the plugin, or with one from before it could say.
+     */
+    suspend fun cardFiles(): CardReport? {
+        val link = base.newBuilder().addPathSegments("api/plugin/cardtransfer").addQueryParameter("cards", "").build()
+        return exec(Request.Builder().url(link).build(), expectOk = false) { r ->
+            if (r.code != 200) return@exec null
+            runCatching { JSONObject(r.text()) }.getOrNull()?.let(::parseCardReport)
+        }
+    }
+
     /** Copies [file] onto the printer's SD card the fast way, and prints it from there once it's on. */
     suspend fun copyToCardAndPrint(file: PrintFile) =
         send("api/plugin/cardtransfer", JSONObject().put("command", "send_and_print").put("path", file.path))
@@ -397,6 +409,26 @@ fun Throwable.forPeople(): String = when (this) {
         else -> "OctoPrint answered with an error ($code)."
     }
     else -> "Couldn't reach OctoPrint."
+}
+
+/**
+ * The Card Transfer plugin's answer to ?cards: {card_ready, files: {path: card name} or null, space}.
+ * Null for a plugin from before it gave one.
+ */
+internal fun parseCardReport(o: JSONObject): CardReport? {
+    if (!o.has("card_ready")) return null
+    val listed = o.optJSONObject("files")?.let { f -> f.keys().asSequence().associateWith { f.optString(it) } }
+    return CardReport(
+        files = if (o.optBoolean("card_ready")) listed.orEmpty() else null,
+        space = o.optJSONObject("space")?.let(::parseCardSpace),
+    )
+}
+
+/** The card's size and free space, in bytes: {total, free, used}. Null when it doesn't add up. */
+internal fun parseCardSpace(o: JSONObject): CardSpace? {
+    val total = o.optLong("total", 0)
+    val free = o.optLong("free", -1)
+    return if (total > 0 && free in 0..total) CardSpace(total, free) else null
 }
 
 /**

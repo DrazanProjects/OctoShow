@@ -17,6 +17,7 @@ import com.drazan.echoshow.octoprint.data.DisplayPrefs
 import com.drazan.echoshow.octoprint.data.Prefs
 import com.drazan.echoshow.octoprint.data.Server
 import com.drazan.echoshow.octoprint.octo.CardCopy
+import com.drazan.echoshow.octoprint.octo.CardState
 import com.drazan.echoshow.octoprint.octo.FoundServer
 import com.drazan.echoshow.octoprint.octo.HeatPreset
 import com.drazan.echoshow.octoprint.octo.JobFile
@@ -164,6 +165,12 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
      */
     var cardCopy: CardCopy? by mutableStateOf(null)
         private set
+    /**
+     * What the printer's SD card has of OctoPrint's files, and how full it is (the Card Transfer
+     * plugin). Null without the plugin, or until it has answered.
+     */
+    var card: CardState? by mutableStateOf(null)
+        private set
     /** One line of feedback after an action fails; clears itself. */
     var notice: String? by mutableStateOf(null)
         private set
@@ -257,6 +264,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     private var filesStale = true
     private var filesWanted = false
     private var filesJob: Job? = null
+    private var cardJob: Job? = null
     private var noticeJob: Job? = null
     private var jobFileJob: Job? = null
 
@@ -331,6 +339,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
         temps = emptyList()
         info = ServerInfo()
         files = FilesState()
+        card = null
         jobFile = null
         outcome = null
         prompt = null
@@ -482,6 +491,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                     .joinToString(": ") + ". It is still in OctoPrint."
             )
             is LiveEvent.HeatersOff -> say("Heaters switched off: ${e.why.ifBlank { "nothing came to use them" }}.")
+            is LiveEvent.CardSpaceChanged -> card = (card ?: CardState()).copy(space = e.space)
         }
     }
 
@@ -577,7 +587,31 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     /** The file list is on screen; keep it fresh even while printing. */
     fun watchFiles(watching: Boolean) {
         filesWanted = watching
-        if (watching) wantFiles()
+        if (watching) {
+            wantFiles()
+            refreshCard()
+        }
+    }
+
+    /**
+     * Asks the Card Transfer plugin which files the printer's SD card has, and how full it is. It
+     * answers from what OctoPrint already knows, so this costs neither the Pi nor the printer much.
+     * While it can't say (during a copy), the files the card had are kept: they haven't gone anywhere.
+     */
+    fun refreshCard() {
+        val octo = api ?: return
+        val scope = session ?: return
+        if (cardJob?.isActive == true) return
+        cardJob = scope.launch {
+            val report = try {
+                octo.cardFiles()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return@launch
+            }
+            card = report?.let { CardState(files = it.files ?: card?.files.orEmpty(), space = it.space) }
+        }
     }
 
     fun refreshFiles() {
@@ -591,6 +625,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     files = FilesState(loaded = true, root = octo.files())
                     previewAsks.trySend(null)
+                    refreshCard()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

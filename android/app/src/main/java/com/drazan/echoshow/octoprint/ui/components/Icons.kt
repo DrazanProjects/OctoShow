@@ -56,6 +56,8 @@ object Icons {
     )
     val Plug = line("M9 3v5", "M15 3v5", "M6 8h12v3a6 6 0 0 1-12 0Z", "M12 17v4")
     val Power = line("M12 3v8.5", "M7.2 6.3a7.6 7.6 0 1 0 9.6 0")
+    /** An SD card: a corner cut off, and its contacts. */
+    val SdCard = line("M9 3h8a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7Z", "M10 6.5v3", "M13 6.5v3", "M16 6.5v3")
     val Wifi = line("M3 9a13 13 0 0 1 18 0", "M6.5 12.5a8 8 0 0 1 11 0", "M10 16a3 3 0 0 1 4 0", "M12 19.5v.5")
 
     private fun line(vararg paths: String, width: Float = 1.9f): ImageVector =
